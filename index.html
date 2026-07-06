@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>喬一下 · 聚會時間地點協調</title>
+<!--
+═══════════════════════════════════════════════════════════════
+  喬一下（Supabase 版）— 部署步驟
+═══════════════════════════════════════════════════════════════
+  1. 到 Supabase 專案 → SQL Editor，貼上並執行下面整段 SQL：
+
+  create table if not exists qiao_events (
+    id text primary key,
+    name text not null,
+    descr text default '',
+    start_date date not null,
+    end_date date not null,
+    created_at timestamptz default now()
+  );
+  create table if not exists qiao_responses (
+    event_id text not null,
+    name text not null,
+    dates jsonb default '{}'::jsonb,
+    cities jsonb default '[]'::jsonb,
+    updated_at timestamptz default now(),
+    primary key (event_id, name)
+  );
+  create table if not exists qiao_proposals (
+    id text primary key,
+    event_id text not null,
+    content text not null,
+    author text not null,
+    votes jsonb default '[]'::jsonb,
+    created_at timestamptz default now()
+  );
+  alter table qiao_events enable row level security;
+  alter table qiao_responses enable row level security;
+  alter table qiao_proposals enable row level security;
+  create policy "public_all" on qiao_events    for all using (true) with check (true);
+  create policy "public_all" on qiao_responses for all using (true) with check (true);
+  create policy "public_all" on qiao_proposals for all using (true) with check (true);
+
+  2. 把下面 <script> 裡的 SUPABASE_URL 和 SUPABASE_KEY
+     換成你專案的 Project URL 和 anon public key
+     （Settings → API，跟團購報名系統同一個專案也可以共用）
+
+  3. 上傳到 GitHub Pages，把網址丟到 LINE 群就能用了
+═══════════════════════════════════════════════════════════════
+-->
+<style>
+:root{
+  --ink:#22303f;
+  --ink-soft:#5b6b7c;
+  --bg:#eef2f0;
+  --card:#ffffff;
+  --line:#dbe3df;
+  --green:#0e7c66;        /* 主色：郵局綠 */
+  --green-soft:#e3f2ec;
+  --stamp:#c8322b;        /* 印章紅，只用在推薦章 */
+  --ticket:#fbf5e6;       /* 車票米黃，只用在推薦票卡 */
+  --ticket-line:#d9c9a3;
+  --amber:#f2b134;
+  --radius:14px;
+  --shadow:0 2px 10px rgba(34,48,63,.07);
+  font-size:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  background:var(--bg);
+  color:var(--ink);
+  min-height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:560px;margin:0 auto;padding:16px 14px 90px}
+header.app{
+  display:flex;align-items:baseline;gap:10px;
+  padding:18px 4px 14px;
+}
+header.app h1{
+  font-size:1.55rem;font-weight:800;letter-spacing:.06em;
+  color:var(--green);
+}
+header.app h1 .qiao{
+  display:inline-block;background:var(--green);color:#fff;
+  border-radius:8px;padding:0 .3em;margin-right:.15em;
+  transform:rotate(-4deg);
+}
+header.app .sub{font-size:.8rem;color:var(--ink-soft)}
+.banner-warn{
+  background:#fff6e0;border:1.5px solid var(--amber);border-radius:var(--radius);
+  padding:12px 14px;font-size:.85rem;line-height:1.7;margin-bottom:14px;
+}
+.card{
+  background:var(--card);border:1px solid var(--line);
+  border-radius:var(--radius);box-shadow:var(--shadow);
+  padding:16px;margin-bottom:14px;
+}
+h2{font-size:1.05rem;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none}
+label.f{display:block;font-size:.85rem;color:var(--ink-soft);margin:10px 0 4px}
+input[type=text],input[type=date],textarea{
+  width:100%;padding:10px 12px;border:1.5px solid var(--line);
+  border-radius:10px;font-size:1rem;font-family:inherit;background:#fff;color:var(--ink);
+}
+input:focus,textarea:focus{outline:2px solid var(--green);outline-offset:1px;border-color:var(--green)}
+textarea{resize:vertical;min-height:60px}
+.row2{display:flex;gap:10px}
+.row2>*{flex:1}
+button{
+  font-family:inherit;font-size:1rem;cursor:pointer;border:none;border-radius:10px;
+}
+button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.btn-main{
+  width:100%;padding:13px;background:var(--green);color:#fff;font-weight:700;
+  letter-spacing:.15em;margin-top:14px;
+}
+.btn-main:active{transform:scale(.985)}
+.btn-main:disabled{opacity:.5}
+.btn-ghost{
+  background:none;border:1.5px solid var(--line);color:var(--ink-soft);
+  padding:8px 14px;font-size:.85rem;border-radius:999px;
+}
+.btn-ghost:active{background:var(--green-soft)}
+.btn-danger{background:none;color:var(--stamp);font-size:.8rem;padding:6px 8px;text-decoration:underline}
+/* ---- 首頁活動列表 ---- */
+.ev-item{
+  display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:13px 6px;border-bottom:1px dashed var(--line);cursor:pointer;
+}
+.ev-item:last-child{border-bottom:none}
+.ev-item .n{font-weight:700}
+.ev-item .d{font-size:.78rem;color:var(--ink-soft);margin-top:2px}
+.ev-item .go{color:var(--green);font-weight:700;flex:none}
+.empty{color:var(--ink-soft);font-size:.9rem;text-align:center;padding:18px 0}
+/* ---- 活動頁 ---- */
+.ev-head{padding:4px 4px 12px}
+.ev-head .name{font-size:1.3rem;font-weight:800}
+.ev-head .desc{font-size:.85rem;color:var(--ink-soft);margin-top:4px;white-space:pre-wrap}
+.back{background:none;color:var(--green);font-weight:700;font-size:.9rem;padding:6px 0;margin-bottom:4px}
+.share-line{
+  display:flex;gap:8px;align-items:center;margin-top:8px;
+}
+.share-line .btn-ghost{flex:none}
+.tabs{
+  display:flex;background:#fff;border:1px solid var(--line);border-radius:999px;
+  padding:4px;margin-bottom:14px;box-shadow:var(--shadow);
+  position:sticky;top:8px;z-index:5;
+}
+.tabs button{
+  flex:1;padding:9px 0;border-radius:999px;background:none;color:var(--ink-soft);
+  font-weight:700;font-size:.9rem;
+}
+.tabs button.on{background:var(--green);color:#fff}
+/* ---- 日期格 ---- */
+.month-sep{font-size:.8rem;font-weight:700;color:var(--green);margin:14px 0 6px;letter-spacing:.1em}
+.date-row{
+  display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px dashed var(--line);
+}
+.date-row .dl{
+  flex:none;width:96px;font-size:.9rem;font-weight:600;cursor:pointer;user-select:none;
+  -webkit-user-select:none;
+}
+.date-row .dl small{color:var(--ink-soft);font-weight:400;margin-left:4px}
+.date-row .dl.wknd small{color:var(--stamp)}
+.slots{display:flex;gap:6px;flex:1}
+.slot{
+  flex:1;padding:7px 0;border-radius:8px;border:1.5px solid var(--line);
+  background:#fff;color:var(--ink-soft);font-size:.82rem;
+}
+.slot.on{background:var(--green);border-color:var(--green);color:#fff;font-weight:700}
+/* ---- 縣市 ---- */
+.region{font-size:.78rem;font-weight:700;color:var(--ink-soft);margin:12px 0 6px;letter-spacing:.15em}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{
+  padding:7px 13px;border-radius:999px;border:1.5px solid var(--line);
+  background:#fff;color:var(--ink);font-size:.88rem;
+}
+.chip.on{background:var(--green);border-color:var(--green);color:#fff;font-weight:700}
+/* ---- 結果 ---- */
+.bar-row{margin-bottom:10px}
+.bar-row .t{display:flex;justify-content:space-between;font-size:.88rem;margin-bottom:3px}
+.bar-row .t b.full{color:var(--stamp)}
+.bar{height:10px;background:var(--green-soft);border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--green);border-radius:99px}
+.bar-row .who{font-size:.72rem;color:var(--ink-soft);margin-top:3px;line-height:1.5}
+.badge-full{
+  display:inline-block;font-size:.68rem;background:var(--stamp);color:#fff;
+  border-radius:6px;padding:1px 6px;margin-left:6px;vertical-align:1px;
+}
+/* ---- 推薦票卡（台鐵風車票）---- */
+.ticket{
+  position:relative;background:var(--ticket);border:1.5px solid var(--ticket-line);
+  border-radius:12px;padding:16px 18px;margin-bottom:14px;overflow:hidden;
+  background-image:repeating-linear-gradient(0deg,transparent 0 26px,rgba(217,201,163,.25) 26px 27px);
+}
+.ticket::before,.ticket::after{
+  content:"";position:absolute;top:50%;width:22px;height:22px;border-radius:50%;
+  background:var(--bg);border:1.5px solid var(--ticket-line);transform:translateY(-50%);
+}
+.ticket::before{left:-12px}
+.ticket::after{right:-12px}
+.ticket .tk-top{
+  display:flex;justify-content:space-between;font-size:.7rem;color:#8a7a55;
+  letter-spacing:.2em;border-bottom:1px dashed var(--ticket-line);padding-bottom:6px;margin-bottom:10px;
+}
+.ticket .tk-main{display:flex;align-items:center;justify-content:center;gap:12px;text-align:center}
+.ticket .tk-main .big{font-size:1.25rem;font-weight:800}
+.ticket .tk-main .small{font-size:.72rem;color:#8a7a55;margin-top:2px}
+.ticket .arrow{color:var(--green);font-size:1.2rem;font-weight:800}
+.ticket .tk-bottom{
+  margin-top:10px;padding-top:8px;border-top:1px dashed var(--ticket-line);
+  font-size:.8rem;color:#6d5f3f;text-align:center;
+}
+.ticket .stamp{
+  position:absolute;right:10px;top:8px;
+  border:2px solid var(--stamp);color:var(--stamp);border-radius:50%;
+  width:52px;height:52px;display:flex;align-items:center;justify-content:center;
+  font-size:.72rem;font-weight:800;transform:rotate(12deg);opacity:.85;
+  letter-spacing:.1em;line-height:1.15;text-align:center;
+}
+/* ---- 提案 ---- */
+.prop{
+  display:flex;gap:10px;align-items:flex-start;padding:11px 0;border-bottom:1px dashed var(--line);
+}
+.prop:last-child{border-bottom:none}
+.prop .vote{
+  flex:none;width:52px;padding:6px 0;border-radius:10px;border:1.5px solid var(--line);
+  background:#fff;font-size:.8rem;color:var(--ink-soft);
+}
+.prop .vote.on{border-color:var(--green);background:var(--green-soft);color:var(--green);font-weight:700}
+.prop .body .txt{font-size:.95rem;white-space:pre-wrap}
+.prop .body .meta{font-size:.72rem;color:var(--ink-soft);margin-top:3px}
+/* ---- 其他 ---- */
+.note{font-size:.75rem;color:var(--ink-soft);line-height:1.6;margin-top:10px}
+.toast{
+  position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);
+  background:var(--ink);color:#fff;padding:10px 20px;border-radius:999px;font-size:.88rem;
+  opacity:0;pointer-events:none;transition:.25s;z-index:99;max-width:88%;text-align:center;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.hide{display:none!important}
+.spin{
+  width:22px;height:22px;border:3px solid var(--green-soft);border-top-color:var(--green);
+  border-radius:50%;margin:20px auto;animation:sp 1s linear infinite;
+}
+@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="app">
+    <h1><span class="qiao">喬</span>一下</h1>
+    <span class="sub">大家的時間 × 到得了的地方</span>
+  </header>
+
+  <div id="cfgWarn" class="banner-warn hide">
+    ⚠️ 還沒設定 Supabase：請打開這個 HTML 檔，把最上面的
+    <b>SUPABASE_URL</b> 和 <b>SUPABASE_KEY</b> 換成你專案的值，
+    並依檔案開頭註解在 SQL Editor 建好三張資料表。
+  </div>
+
+  <!-- ========= 首頁 ========= -->
+  <div id="vHome">
+    <div class="card">
+      <h2><span class="dot"></span>進行中的聚會</h2>
+      <div id="evList"><div class="spin"></div></div>
+      <button class="btn-ghost" onclick="loadHome()" style="margin-top:10px">↻ 重新整理</button>
+    </div>
+    <div class="card">
+      <h2><span class="dot"></span>開一個新聚會</h2>
+      <label class="f">聚會名稱</label>
+      <input type="text" id="cName" placeholder="例如：八月同學會">
+      <label class="f">說明（可留空）</label>
+      <textarea id="cDesc" placeholder="想約大家吃飯＋逛街，看哪天大家都有空～"></textarea>
+      <div class="row2">
+        <div>
+          <label class="f">開始日期</label>
+          <input type="date" id="cStart">
+        </div>
+        <div>
+          <label class="f">結束日期</label>
+          <input type="date" id="cEnd">
+        </div>
+      </div>
+      <button class="btn-main" onclick="createEvent()">建立聚會</button>
+      <p class="note">建立後點進聚會，用「複製這個聚會的連結」把網址丟到 LINE 群，朋友點開會直接進到這個聚會填寫。</p>
+    </div>
+  </div>
+
+  <!-- ========= 活動頁 ========= -->
+  <div id="vEvent" class="hide">
+    <button class="back" onclick="goHome()">← 回聚會列表</button>
+    <div class="ev-head">
+      <div class="name" id="eName"></div>
+      <div class="desc" id="eDesc"></div>
+      <div class="share-line">
+        <button class="btn-ghost" onclick="copyLink()">🔗 複製這個聚會的連結</button>
+      </div>
+    </div>
+    <div class="tabs">
+      <button id="tabFill" class="on" onclick="switchTab('fill')">填我的</button>
+      <button id="tabResult" onclick="switchTab('result')">看結果</button>
+      <button id="tabProp" onclick="switchTab('prop')">提案</button>
+    </div>
+
+    <!-- 填寫 -->
+    <div id="pFill">
+      <div class="card">
+        <h2><span class="dot"></span>你的名字</h2>
+        <input type="text" id="myName" placeholder="輸入名字或暱稱（同名字會覆蓋之前填的）">
+        <button class="btn-ghost" style="margin-top:8px" onclick="loadMine()">載入我之前填過的</button>
+      </div>
+      <div class="card">
+        <h2><span class="dot"></span>我有空的時間</h2>
+        <p class="note" style="margin:0 0 6px">點日期可整天全選／取消，或個別點早、午、晚。</p>
+        <div id="dateGrid"></div>
+      </div>
+      <div class="card">
+        <h2><span class="dot"></span>我到得了的縣市</h2>
+        <div id="cityGrid"></div>
+      </div>
+      <button class="btn-main" id="btnSave" onclick="saveMine()">送出我的填答</button>
+      <button class="btn-danger" style="display:block;margin:10px auto" onclick="deleteMine()">刪除我的填答</button>
+    </div>
+
+    <!-- 結果 -->
+    <div id="pResult" class="hide">
+      <div id="resultBox"><div class="spin"></div></div>
+      <button class="btn-ghost" onclick="renderResult()" style="margin-bottom:20px">↻ 重新整理結果</button>
+    </div>
+
+    <!-- 提案 -->
+    <div id="pProp" class="hide">
+      <div class="card">
+        <h2><span class="dot"></span>新的提案</h2>
+        <p class="note" style="margin:0 0 6px">想去的餐廳、景點、活動⋯⋯丟出來讓大家 +1！</p>
+        <textarea id="propText" placeholder="例如：高雄駁二＋鹽埕吃冰半日遊"></textarea>
+        <input type="text" id="propName" placeholder="提案人名字" style="margin-top:8px">
+        <button class="btn-main" onclick="addProp()">送出提案</button>
+      </div>
+      <div class="card">
+        <h2><span class="dot"></span>大家的提案</h2>
+        <div id="propList"><div class="spin"></div></div>
+        <button class="btn-ghost" onclick="renderProps()" style="margin-top:10px">↻ 重新整理</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* ═══════════ ① 換成你的 Supabase 專案設定 ═══════════ */
+const SUPABASE_URL='https://qsztcfntdwoqijhrhnoe.supabase.co';
+const SUPABASE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFzenRjZm50ZHdvcWlqaHJobm9lIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MTA3MjUsImV4cCI6MjA5ODQ4NjcyNX0.1daMPelZVzU-LL1U9MznpR4JOn4p2KdlVX3k1GM582g';
+/* ═════════════════════════════════════════════════════ */
+
+const CONFIGURED=!SUPABASE_URL.includes('YOUR-PROJECT')&&!SUPABASE_KEY.includes('YOUR-ANON');
+const sb=CONFIGURED?window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY):null;
+
+const CITIES={
+ '北部':['台北市','新北市','基隆市','桃園市','新竹市','新竹縣','宜蘭縣'],
+ '中部':['苗栗縣','台中市','彰化縣','南投縣','雲林縣'],
+ '南部':['嘉義市','嘉義縣','台南市','高雄市','屏東縣'],
+ '東部':['花蓮縣','台東縣'],
+ '離島':['澎湖縣','金門縣','連江縣']
+};
+const SLOTS=[['am','早'],['pm','午'],['ev','晚']];
+const WD=['日','一','二','三','四','五','六'];
+
+let curEvent=null;
+let fillState={dates:{},cities:new Set()};
+
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2400)}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtD(iso){const d=new Date(iso+'T00:00:00');return (d.getMonth()+1)+'/'+d.getDate()}
+function wdOf(iso){return new Date(iso+'T00:00:00').getDay()}
+function dateRange(s,e){
+  const out=[];let d=new Date(s+'T00:00:00');const end=new Date(e+'T00:00:00');let i=0;
+  while(d<=end&&i<62){out.push(d.toISOString().slice(0,10));d.setDate(d.getDate()+1);i++}
+  return out;
+}
+function needCfg(){if(!CONFIGURED){toast('請先設定 Supabase（見頁面上方說明）');return true}return false}
+
+/* ================= 資料層（Supabase） ================= */
+async function dbEvents(){
+  const{data,error}=await sb.from('qiao_events').select('*').order('created_at',{ascending:false});
+  if(error)throw error;return data||[];
+}
+async function dbEventById(id){
+  const{data,error}=await sb.from('qiao_events').select('*').eq('id',id).maybeSingle();
+  if(error)throw error;return data;
+}
+async function dbCreateEvent(ev){
+  const{error}=await sb.from('qiao_events').insert(ev);if(error)throw error;
+}
+async function dbDeleteEvent(id){
+  await sb.from('qiao_responses').delete().eq('event_id',id);
+  await sb.from('qiao_proposals').delete().eq('event_id',id);
+  const{error}=await sb.from('qiao_events').delete().eq('id',id);if(error)throw error;
+}
+async function dbResponses(eid){
+  const{data,error}=await sb.from('qiao_responses').select('*').eq('event_id',eid);
+  if(error)throw error;return data||[];
+}
+async function dbMyResponse(eid,name){
+  const{data,error}=await sb.from('qiao_responses').select('*')
+    .eq('event_id',eid).eq('name',name).maybeSingle();
+  if(error)throw error;return data;
+}
+async function dbSaveResponse(row){
+  const{error}=await sb.from('qiao_responses').upsert(row,{onConflict:'event_id,name'});
+  if(error)throw error;
+}
+async function dbDeleteResponse(eid,name){
+  const{error}=await sb.from('qiao_responses').delete().eq('event_id',eid).eq('name',name);
+  if(error)throw error;
+}
+async function dbProposals(eid){
+  const{data,error}=await sb.from('qiao_proposals').select('*').eq('event_id',eid);
+  if(error)throw error;return data||[];
+}
+async function dbAddProposal(p){
+  const{error}=await sb.from('qiao_proposals').insert(p);if(error)throw error;
+}
+async function dbGetProposal(id){
+  const{data,error}=await sb.from('qiao_proposals').select('*').eq('id',id).maybeSingle();
+  if(error)throw error;return data;
+}
+async function dbUpdateVotes(id,votes){
+  const{error}=await sb.from('qiao_proposals').update({votes}).eq('id',id);if(error)throw error;
+}
+
+/* ================= 首頁 ================= */
+async function loadHome(){
+  const box=document.getElementById('evList');
+  if(!CONFIGURED){box.innerHTML='<div class="empty">尚未設定 Supabase</div>';return}
+  box.innerHTML='<div class="spin"></div>';
+  let evs=[];
+  try{evs=await dbEvents()}catch(e){box.innerHTML='<div class="empty">讀取失敗，請檢查 Supabase 設定或網路</div>';return}
+  if(!evs.length){box.innerHTML='<div class="empty">還沒有聚會，開一個吧！</div>';return}
+  box.innerHTML='';
+  evs.forEach(ev=>{
+    const div=document.createElement('div');div.className='ev-item';
+    div.innerHTML=`<div><div class="n">${esc(ev.name)}</div>
+      <div class="d">${fmtD(ev.start_date)} ～ ${fmtD(ev.end_date)}　<button class="btn-danger" data-del="${ev.id}">刪除</button></div></div>
+      <div class="go">填寫 →</div>`;
+    div.addEventListener('click',e=>{
+      if(e.target.dataset.del){e.stopPropagation();removeEvent(e.target.dataset.del);return}
+      openEvent(ev);
+    });
+    box.appendChild(div);
+  });
+}
+async function removeEvent(id){
+  if(!confirm('確定要刪除這個聚會？大家填的資料也會一起刪除。'))return;
+  try{await dbDeleteEvent(id);toast('已刪除')}catch(e){toast('刪除失敗，請再試一次')}
+  loadHome();
+}
+async function createEvent(){
+  if(needCfg())return;
+  const name=document.getElementById('cName').value.trim();
+  const start=document.getElementById('cStart').value,end=document.getElementById('cEnd').value;
+  if(!name){toast('請輸入聚會名稱');return}
+  if(!start||!end||end<start){toast('請確認日期範圍');return}
+  if(dateRange(start,end).length>=62){toast('日期範圍請在兩個月內');return}
+  const ev={id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    name,descr:document.getElementById('cDesc').value.trim(),
+    start_date:start,end_date:end};
+  try{await dbCreateEvent(ev)}catch(e){toast('建立失敗，請再試一次');return}
+  document.getElementById('cName').value='';document.getElementById('cDesc').value='';
+  toast('聚會建立完成！');openEvent(ev);
+}
+
+/* ================= 活動頁 ================= */
+function goHome(){
+  history.replaceState(null,'',location.pathname);
+  document.getElementById('vEvent').classList.add('hide');
+  document.getElementById('vHome').classList.remove('hide');
+  loadHome();
+}
+function openEvent(ev){
+  curEvent=ev;fillState={dates:{},cities:new Set()};
+  history.replaceState(null,'',location.pathname+'?ev='+ev.id);
+  document.getElementById('vHome').classList.add('hide');
+  document.getElementById('vEvent').classList.remove('hide');
+  document.getElementById('eName').textContent=ev.name;
+  document.getElementById('eDesc').textContent=ev.descr||'';
+  buildFillUI();switchTab('fill');
+  window.scrollTo(0,0);
+}
+function copyLink(){
+  const url=location.origin+location.pathname+'?ev='+curEvent.id;
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(()=>toast('已複製，貼到 LINE 群吧！'))
+      .catch(()=>prompt('手動複製這個連結：',url));
+  }else prompt('手動複製這個連結：',url);
+}
+function switchTab(t){
+  ['fill','result','prop'].forEach(x=>{
+    document.getElementById('p'+x[0].toUpperCase()+x.slice(1)).classList.toggle('hide',x!==t);
+    document.getElementById('tab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('on',x===t);
+  });
+  if(t==='result')renderResult();
+  if(t==='prop'){
+    const n=document.getElementById('myName').value.trim();
+    if(n&&!document.getElementById('propName').value)document.getElementById('propName').value=n;
+    renderProps();
+  }
+}
+
+/* ---- 填寫 UI ---- */
+function buildFillUI(){
+  const grid=document.getElementById('dateGrid');grid.innerHTML='';
+  let lastM='';
+  dateRange(curEvent.start_date,curEvent.end_date).forEach(iso=>{
+    const m=iso.slice(0,7);
+    if(m!==lastM){lastM=m;const s=document.createElement('div');s.className='month-sep';
+      s.textContent=parseInt(m.slice(5))+' 月';grid.appendChild(s)}
+    const w=wdOf(iso);
+    const row=document.createElement('div');row.className='date-row';
+    const dl=document.createElement('div');dl.className='dl'+(w===0||w===6?' wknd':'');
+    dl.innerHTML=`${fmtD(iso)}<small>（${WD[w]}）</small>`;
+    dl.addEventListener('click',()=>{
+      const cur=fillState.dates[iso]||[];
+      fillState.dates[iso]=cur.length===3?[]:['am','pm','ev'];
+      syncRow(row,iso);
+    });
+    row.appendChild(dl);
+    const slots=document.createElement('div');slots.className='slots';
+    SLOTS.forEach(([k,lab])=>{
+      const b=document.createElement('button');b.className='slot';b.textContent=lab;b.dataset.k=k;
+      b.addEventListener('click',()=>{
+        const set=new Set(fillState.dates[iso]||[]);
+        set.has(k)?set.delete(k):set.add(k);
+        fillState.dates[iso]=[...set];syncRow(row,iso);
+      });
+      slots.appendChild(b);
+    });
+    row.appendChild(slots);row.dataset.iso=iso;grid.appendChild(row);
+  });
+  const cg=document.getElementById('cityGrid');cg.innerHTML='';
+  Object.entries(CITIES).forEach(([reg,cities])=>{
+    const r=document.createElement('div');r.className='region';r.textContent=reg;cg.appendChild(r);
+    const ch=document.createElement('div');ch.className='chips';
+    cities.forEach(c=>{
+      const b=document.createElement('button');b.className='chip';b.textContent=c;b.dataset.c=c;
+      b.addEventListener('click',()=>{
+        fillState.cities.has(c)?fillState.cities.delete(c):fillState.cities.add(c);
+        b.classList.toggle('on',fillState.cities.has(c));
+      });
+      ch.appendChild(b);
+    });
+    cg.appendChild(ch);
+  });
+}
+function syncRow(row,iso){
+  const on=new Set(fillState.dates[iso]||[]);
+  row.querySelectorAll('.slot').forEach(b=>b.classList.toggle('on',on.has(b.dataset.k)));
+}
+function syncAllFill(){
+  document.querySelectorAll('#dateGrid .date-row').forEach(r=>syncRow(r,r.dataset.iso));
+  document.querySelectorAll('#cityGrid .chip').forEach(b=>b.classList.toggle('on',fillState.cities.has(b.dataset.c)));
+}
+async function loadMine(){
+  const n=document.getElementById('myName').value.trim();
+  if(!n){toast('先輸入名字');return}
+  let r=null;
+  try{r=await dbMyResponse(curEvent.id,n)}catch(e){toast('讀取失敗，請再試一次');return}
+  if(!r){toast('沒有找到「'+n+'」之前的填答');return}
+  fillState={dates:r.dates||{},cities:new Set(r.cities||[])};
+  syncAllFill();toast('已載入，可以直接修改再送出');
+}
+async function saveMine(){
+  if(needCfg())return;
+  const n=document.getElementById('myName').value.trim();
+  if(!n){toast('請先填名字');return}
+  const dates={};Object.entries(fillState.dates).forEach(([k,v])=>{if(v&&v.length)dates[k]=v});
+  if(!Object.keys(dates).length&&!fillState.cities.size){toast('至少選一個有空的時間或縣市');return}
+  const btn=document.getElementById('btnSave');btn.disabled=true;
+  try{
+    await dbSaveResponse({event_id:curEvent.id,name:n,dates,cities:[...fillState.cities],
+      updated_at:new Date().toISOString()});
+    toast('送出成功！');switchTab('result');
+  }catch(e){toast('送出失敗，請再試一次')}
+  btn.disabled=false;
+}
+async function deleteMine(){
+  const n=document.getElementById('myName').value.trim();
+  if(!n){toast('先輸入名字');return}
+  if(!confirm('刪除「'+n+'」的填答？'))return;
+  try{await dbDeleteResponse(curEvent.id,n)}catch(e){toast('刪除失敗，請再試一次');return}
+  fillState={dates:{},cities:new Set()};syncAllFill();toast('已刪除');
+}
+
+/* ---- 結果 ---- */
+async function renderResult(){
+  const box=document.getElementById('resultBox');
+  box.innerHTML='<div class="spin"></div>';
+  let resp=[];
+  try{resp=await dbResponses(curEvent.id)}catch(e){box.innerHTML='<div class="card"><div class="empty">讀取失敗，請再試一次</div></div>';return}
+  if(!resp.length){box.innerHTML='<div class="card"><div class="empty">還沒有人填，把連結分享給朋友吧！</div></div>';return}
+  const total=resp.length;
+  // 日期統計
+  const dstat={};
+  resp.forEach(r=>Object.entries(r.dates||{}).forEach(([d,slots])=>{
+    if(!slots||!slots.length)return;
+    dstat[d]=dstat[d]||{names:[],am:0,pm:0,ev:0};
+    dstat[d].names.push(r.name);
+    slots.forEach(s=>dstat[d][s]++);
+  }));
+  const dRank=Object.entries(dstat).sort((a,b)=>b[1].names.length-a[1].names.length||a[0].localeCompare(b[0]));
+  // 縣市統計
+  const cstat={};
+  resp.forEach(r=>(r.cities||[]).forEach(c=>{cstat[c]=cstat[c]||[];cstat[c].push(r.name)}));
+  const cRank=Object.entries(cstat).sort((a,b)=>b[1].length-a[1].length);
+
+  let html='';
+  // 推薦票卡
+  if(dRank.length&&cRank.length){
+    const[bd,bi]=dRank[0],[bc,bn]=cRank[0];
+    const both=bi.names.filter(n=>bn.includes(n));
+    const slotBest=[['am','早上'],['pm','下午'],['ev','晚上']].sort((a,b)=>bi[b[0]]-bi[a[0]])[0];
+    html+=`<div class="ticket">
+      <div class="stamp">推薦<br>組合</div>
+      <div class="tk-top"><span>喬一下 · 乘車券</span><span>共 ${total} 人填答</span></div>
+      <div class="tk-main">
+        <div><div class="big">${fmtD(bd)}（${WD[wdOf(bd)]}）</div><div class="small">最多人有空的日子</div></div>
+        <div class="arrow">➔</div>
+        <div><div class="big">${esc(bc)}</div><div class="small">最多人到得了</div></div>
+      </div>
+      <div class="tk-bottom">這天 ${bi.names.length} 人有空（建議約${slotBest[1]}），${bn.length} 人到得了${esc(bc)}，兩者都可以的有 ${both.length} 人</div>
+    </div>`;
+  }
+  // 日期排行
+  html+='<div class="card"><h2><span class="dot"></span>時間熱度（前 8 名）</h2>';
+  if(!dRank.length)html+='<div class="empty">還沒有人填時間</div>';
+  dRank.slice(0,8).forEach(([d,i])=>{
+    const full=i.names.length===total;
+    html+=`<div class="bar-row">
+      <div class="t"><span>${fmtD(d)}（${WD[wdOf(d)]}）${full?'<span class="badge-full">全員OK</span>':''}</span>
+      <b class="${full?'full':''}">${i.names.length}/${total} 人</b></div>
+      <div class="bar"><i style="width:${i.names.length/total*100}%"></i></div>
+      <div class="who">早${i.am}·午${i.pm}·晚${i.ev}｜${i.names.map(esc).join('、')}</div>
+    </div>`;
+  });
+  html+='</div>';
+  // 縣市排行
+  html+='<div class="card"><h2><span class="dot"></span>地點熱度</h2>';
+  if(!cRank.length)html+='<div class="empty">還沒有人填縣市</div>';
+  cRank.slice(0,8).forEach(([c,names])=>{
+    const full=names.length===total;
+    html+=`<div class="bar-row">
+      <div class="t"><span>${esc(c)}${full?'<span class="badge-full">全員OK</span>':''}</span>
+      <b class="${full?'full':''}">${names.length}/${total} 人</b></div>
+      <div class="bar"><i style="width:${names.length/total*100}%"></i></div>
+      <div class="who">${names.map(esc).join('、')}</div>
+    </div>`;
+  });
+  html+='</div>';
+  // 已填名單
+  html+=`<div class="card"><h2><span class="dot"></span>已填名單（${total} 人）</h2>
+    <div class="chips">${resp.map(r=>`<span class="chip on" style="cursor:default">${esc(r.name)}</span>`).join('')}</div></div>`;
+  box.innerHTML=html;
+}
+
+/* ---- 提案 ---- */
+async function addProp(){
+  if(needCfg())return;
+  const txt=document.getElementById('propText').value.trim();
+  const n=document.getElementById('propName').value.trim();
+  if(!txt){toast('提案內容不能空白');return}
+  if(!n){toast('請填提案人名字');return}
+  const p={id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+    event_id:curEvent.id,content:txt,author:n,votes:[n]};
+  try{
+    await dbAddProposal(p);
+    document.getElementById('propText').value='';
+    toast('提案送出！');renderProps();
+  }catch(e){toast('送出失敗，請再試一次')}
+}
+async function renderProps(){
+  const box=document.getElementById('propList');
+  box.innerHTML='<div class="spin"></div>';
+  let props=[];
+  try{props=await dbProposals(curEvent.id)}catch(e){box.innerHTML='<div class="empty">讀取失敗，請再試一次</div>';return}
+  if(!props.length){box.innerHTML='<div class="empty">還沒有提案，搶頭香！</div>';return}
+  props.sort((a,b)=>b.votes.length-a.votes.length||(a.created_at||'').localeCompare(b.created_at||''));
+  const me=document.getElementById('propName').value.trim();
+  box.innerHTML='';
+  props.forEach(p=>{
+    const div=document.createElement('div');div.className='prop';
+    const voted=me&&p.votes.includes(me);
+    div.innerHTML=`<button class="vote ${voted?'on':''}">👍 ${p.votes.length}</button>
+      <div class="body"><div class="txt">${esc(p.content)}</div>
+      <div class="meta">by ${esc(p.author)}｜+1：${p.votes.map(esc).join('、')||'—'}</div></div>`;
+    div.querySelector('.vote').addEventListener('click',async()=>{
+      const name=document.getElementById('propName').value.trim();
+      if(!name){toast('先在上面填你的名字才能 +1');return}
+      let fresh=null;
+      try{fresh=await dbGetProposal(p.id)}catch(e){toast('失敗，請再試');return}
+      if(!fresh){toast('這個提案已被刪除');renderProps();return}
+      const set=new Set(fresh.votes||[]);
+      set.has(name)?set.delete(name):set.add(name);
+      try{await dbUpdateVotes(p.id,[...set])}catch(e){toast('失敗，請再試');return}
+      renderProps();
+    });
+    box.appendChild(div);
+  });
+}
+
+/* ---- 初始化 ---- */
+(async function init(){
+  if(!CONFIGURED)document.getElementById('cfgWarn').classList.remove('hide');
+  const t=new Date(),e=new Date();e.setDate(e.getDate()+21);
+  document.getElementById('cStart').value=t.toISOString().slice(0,10);
+  document.getElementById('cEnd').value=e.toISOString().slice(0,10);
+  // 直接帶 ?ev= 進來 → 直達該聚會（給朋友的連結）
+  const evId=new URLSearchParams(location.search).get('ev');
+  if(CONFIGURED&&evId){
+    try{
+      const ev=await dbEventById(evId);
+      if(ev){openEvent(ev);return}
+      toast('找不到這個聚會，可能已被刪除');
+    }catch(e){}
+  }
+  loadHome();
+})();
+</script>
+</body>
+</html>
