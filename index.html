@@ -34,12 +34,29 @@
     votes jsonb default '[]'::jsonb,
     created_at timestamptz default now()
   );
+  create table if not exists qiao_itinerary (
+    id text primary key,
+    event_id text not null,
+    date date not null,
+    start_time text,
+    end_time text,
+    type text not null default 'activity',
+    title text not null,
+    cost numeric default 0,
+    note text default '',
+    created_at timestamptz default now()
+  );
   alter table qiao_events enable row level security;
   alter table qiao_responses enable row level security;
   alter table qiao_proposals enable row level security;
+  alter table qiao_itinerary enable row level security;
   create policy "public_all" on qiao_events    for all using (true) with check (true);
   create policy "public_all" on qiao_responses for all using (true) with check (true);
   create policy "public_all" on qiao_proposals for all using (true) with check (true);
+  create policy "public_all" on qiao_itinerary for all using (true) with check (true);
+
+  ※ 如果你的專案已經有前三張表，只要另外執行 qiao_itinerary
+     那段 create table / RLS / policy 就好，不會影響既有資料。
 
   2. 把下面 <script> 裡的 SUPABASE_URL 和 SUPABASE_KEY
      換成你專案的 Project URL 和 anon public key
@@ -100,11 +117,11 @@ header.app .sub{font-size:.8rem;color:var(--ink-soft)}
 h2{font-size:1.05rem;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
 h2 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex:none}
 label.f{display:block;font-size:.85rem;color:var(--ink-soft);margin:10px 0 4px}
-input[type=text],input[type=date],textarea{
+input[type=text],input[type=date],input[type=time],textarea,select{
   width:100%;padding:10px 12px;border:1.5px solid var(--line);
   border-radius:10px;font-size:1rem;font-family:inherit;background:#fff;color:var(--ink);
 }
-input:focus,textarea:focus{outline:2px solid var(--green);outline-offset:1px;border-color:var(--green)}
+input:focus,textarea:focus,select:focus{outline:2px solid var(--green);outline-offset:1px;border-color:var(--green)}
 textarea{resize:vertical;min-height:60px}
 .row2{display:flex;gap:10px}
 .row2>*{flex:1}
@@ -232,6 +249,33 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .prop .vote.on{border-color:var(--green);background:var(--green-soft);color:var(--green);font-weight:700}
 .prop .body .txt{font-size:.95rem;white-space:pre-wrap}
 .prop .body .meta{font-size:.72rem;color:var(--ink-soft);margin-top:3px}
+/* ---- 行程時間軸 ---- */
+.itin-day{margin-bottom:18px}
+.itin-day:last-child{margin-bottom:0}
+.itin-day .d-title{font-size:.85rem;font-weight:700;color:var(--green);margin-bottom:8px;letter-spacing:.08em}
+.itin-track{position:relative;padding-left:18px;border-left:2px solid var(--line)}
+.itin-item{position:relative;padding-bottom:16px}
+.itin-item:last-child{padding-bottom:0}
+.itin-item::before{
+  content:"";position:absolute;left:-23px;top:3px;width:10px;height:10px;border-radius:50%;
+  background:var(--green);box-shadow:0 0 0 2px #fff;
+}
+.itin-item.lodging::before{background:var(--amber)}
+.itin-item.taxi::before{background:var(--stamp)}
+.itin-item .time{font-size:.75rem;color:var(--ink-soft);font-weight:700}
+.itin-item .ttl{font-size:.95rem;font-weight:700;margin-top:1px}
+.itin-item .tag{
+  display:inline-block;font-size:.65rem;padding:1px 6px;border-radius:6px;margin-left:6px;
+  background:var(--green-soft);color:var(--green);font-weight:700;vertical-align:1px;
+}
+.itin-item.lodging .tag{background:#fff3de;color:#946600}
+.itin-item.taxi .tag{background:#fbe4e2;color:var(--stamp)}
+.itin-item .cost{font-size:.8rem;color:var(--ink-soft);margin-top:2px}
+.itin-item .nt{font-size:.78rem;color:var(--ink-soft);margin-top:2px;white-space:pre-wrap}
+.itin-item .del{font-size:.7rem;color:var(--stamp);text-decoration:underline;margin-top:4px;background:none;padding:0}
+.split-row{display:flex;justify-content:space-between;font-size:.9rem;padding:7px 0;border-bottom:1px dashed var(--line)}
+.split-row:last-child{border-bottom:none}
+.split-row b{color:var(--green)}
 /* ---- 其他 ---- */
 .note{font-size:.75rem;color:var(--ink-soft);line-height:1.6;margin-top:10px}
 .toast{
@@ -317,6 +361,7 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
       <button id="tabFill" class="on" onclick="switchTab('fill')">填我的</button>
       <button id="tabResult" onclick="switchTab('result')">看結果</button>
       <button id="tabProp" onclick="switchTab('prop')">提案</button>
+      <button id="tabItin" onclick="switchTab('itin')">行程</button>
     </div>
 
     <!-- 填寫 -->
@@ -360,6 +405,54 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
         <button class="btn-ghost" onclick="renderProps()" style="margin-top:10px">↻ 重新整理</button>
       </div>
     </div>
+
+    <!-- 行程 -->
+    <div id="pItin" class="hide">
+      <div class="card">
+        <h2><span class="dot"></span>新增行程／花費</h2>
+        <div class="row2">
+          <div>
+            <label class="f">日期</label>
+            <input type="date" id="itinDate">
+          </div>
+          <div>
+            <label class="f">種類</label>
+            <select id="itinType">
+              <option value="activity">行程／景點</option>
+              <option value="lodging">住宿</option>
+              <option value="taxi">計程車</option>
+            </select>
+          </div>
+        </div>
+        <div class="row2">
+          <div>
+            <label class="f">開始時間</label>
+            <input type="time" id="itinStart">
+          </div>
+          <div>
+            <label class="f">結束時間（可留空）</label>
+            <input type="time" id="itinEnd">
+          </div>
+        </div>
+        <label class="f">內容／地點名稱</label>
+        <input type="text" id="itinTitle" placeholder="例如：貓空纜車、老爺酒店高雄館">
+        <label class="f">金額（住宿／計程車才需要填，會拿去算分攤）</label>
+        <input type="text" inputmode="decimal" id="itinCost" placeholder="例如：3200">
+        <label class="f">備註（可留空）</label>
+        <textarea id="itinNote" placeholder="訂房代碼、注意事項⋯"></textarea>
+        <button class="btn-main" onclick="addItinItem()">新增這筆</button>
+      </div>
+      <div class="card">
+        <h2><span class="dot"></span>行程時間軸</h2>
+        <div id="itinTimeline"><div class="spin"></div></div>
+        <button class="btn-ghost" onclick="renderItinerary()" style="margin-top:10px">↻ 重新整理</button>
+      </div>
+      <div class="card">
+        <h2><span class="dot"></span>費用分攤試算</h2>
+        <p class="note" style="margin:0 0 8px">分攤人數＝目前「填我的」已填答的人數。</p>
+        <div id="itinSplit"><div class="spin"></div></div>
+      </div>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
@@ -383,6 +476,7 @@ const CITIES={
 };
 const SLOTS=[['am','早'],['pm','午'],['ev','晚']];
 const WD=['日','一','二','三','四','五','六'];
+const ITIN_LABEL={activity:'行程／景點',lodging:'住宿',taxi:'計程車'};
 
 let curEvent=null;
 let fillState={dates:{},cities:new Set()};
@@ -416,7 +510,18 @@ async function dbUpdateEvent(id,updates){
 async function dbDeleteEvent(id){
   await sb.from('qiao_responses').delete().eq('event_id',id);
   await sb.from('qiao_proposals').delete().eq('event_id',id);
+  await sb.from('qiao_itinerary').delete().eq('event_id',id);
   const{error}=await sb.from('qiao_events').delete().eq('id',id);if(error)throw error;
+}
+async function dbItinerary(eid){
+  const{data,error}=await sb.from('qiao_itinerary').select('*').eq('event_id',eid).order('date').order('start_time');
+  if(error)throw error;return data||[];
+}
+async function dbAddItinerary(item){
+  const{error}=await sb.from('qiao_itinerary').insert(item);if(error)throw error;
+}
+async function dbDeleteItinerary(id){
+  const{error}=await sb.from('qiao_itinerary').delete().eq('id',id);if(error)throw error;
 }
 async function dbResponses(eid){
   const{data,error}=await sb.from('qiao_responses').select('*').eq('event_id',eid);
@@ -506,6 +611,8 @@ function openEvent(ev){
   document.getElementById('eName').textContent=ev.name;
   document.getElementById('eDesc').textContent=ev.descr||'';
   cancelEditEvent();
+  const itinDate=document.getElementById('itinDate');
+  itinDate.min=ev.start_date;itinDate.max=ev.end_date;itinDate.value=ev.start_date;
   buildFillUI();switchTab('fill');
   window.scrollTo(0,0);
 }
@@ -538,7 +645,7 @@ async function saveEditEvent(){
   toast('已更新聚會資訊');
 }
 function switchTab(t){
-  ['fill','result','prop'].forEach(x=>{
+  ['fill','result','prop','itin'].forEach(x=>{
     document.getElementById('p'+x[0].toUpperCase()+x.slice(1)).classList.toggle('hide',x!==t);
     document.getElementById('tab'+x[0].toUpperCase()+x.slice(1)).classList.toggle('on',x===t);
   });
@@ -548,6 +655,7 @@ function switchTab(t){
     if(n&&!document.getElementById('propName').value)document.getElementById('propName').value=n;
     renderProps();
   }
+  if(t==='itin')renderItinerary();
 }
 
 /* ---- 填寫 UI ---- */
@@ -748,6 +856,91 @@ async function renderProps(){
     });
     box.appendChild(div);
   });
+}
+
+/* ---- 行程／花費分攤 ---- */
+async function addItinItem(){
+  if(needCfg())return;
+  const date=document.getElementById('itinDate').value;
+  const type=document.getElementById('itinType').value;
+  const start=document.getElementById('itinStart').value;
+  const end=document.getElementById('itinEnd').value;
+  const title=document.getElementById('itinTitle').value.trim();
+  const costRaw=document.getElementById('itinCost').value.trim();
+  const note=document.getElementById('itinNote').value.trim();
+  if(!date){toast('請選日期');return}
+  if(!title){toast('請填內容／地點名稱');return}
+  const cost=costRaw?Number(costRaw):0;
+  if(costRaw&&(isNaN(cost)||cost<0)){toast('金額請輸入正確的數字');return}
+  const item={id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+    event_id:curEvent.id,date,start_time:start||null,end_time:end||null,
+    type,title,cost,note};
+  try{await dbAddItinerary(item)}catch(e){toast('新增失敗，請再試一次');return}
+  document.getElementById('itinTitle').value='';
+  document.getElementById('itinCost').value='';
+  document.getElementById('itinNote').value='';
+  toast('已新增行程');
+  renderItinerary();
+}
+async function removeItinItem(id){
+  if(!confirm('刪除這筆行程／花費？'))return;
+  try{await dbDeleteItinerary(id)}catch(e){toast('刪除失敗，請再試一次');return}
+  renderItinerary();
+}
+async function renderItinerary(){
+  const box=document.getElementById('itinTimeline');
+  const splitBox=document.getElementById('itinSplit');
+  box.innerHTML='<div class="spin"></div>';
+  splitBox.innerHTML='<div class="spin"></div>';
+  let items=[],resp=[];
+  try{
+    [items,resp]=await Promise.all([dbItinerary(curEvent.id),dbResponses(curEvent.id)]);
+  }catch(e){
+    box.innerHTML='<div class="empty">讀取失敗，請再試一次</div>';
+    splitBox.innerHTML='<div class="empty">讀取失敗，請再試一次</div>';
+    return;
+  }
+  if(!items.length){
+    box.innerHTML='<div class="empty">還沒有安排行程，新增第一筆吧！</div>';
+  }else{
+    const byDate={};
+    items.forEach(it=>{(byDate[it.date]=byDate[it.date]||[]).push(it)});
+    const dates=Object.keys(byDate).sort();
+    let html='';
+    dates.forEach(d=>{
+      html+=`<div class="itin-day"><div class="d-title">${fmtD(d)}（${WD[wdOf(d)]}）</div><div class="itin-track">`;
+      byDate[d].forEach(it=>{
+        const timeStr=it.start_time?(it.start_time+(it.end_time?'–'+it.end_time:'')):'時間未定';
+        html+=`<div class="itin-item ${it.type}">
+          <div class="time">${timeStr}<span class="tag">${ITIN_LABEL[it.type]||''}</span></div>
+          <div class="ttl">${esc(it.title)}</div>
+          ${it.cost?`<div class="cost">$${Number(it.cost).toLocaleString()}</div>`:''}
+          ${it.note?`<div class="nt">${esc(it.note)}</div>`:''}
+          <button class="del" data-id="${it.id}">刪除</button>
+        </div>`;
+      });
+      html+='</div></div>';
+    });
+    box.innerHTML=html;
+    box.querySelectorAll('.del').forEach(b=>b.addEventListener('click',()=>removeItinItem(b.dataset.id)));
+  }
+  const total=resp.length;
+  const lodging=items.filter(i=>i.type==='lodging').reduce((s,i)=>s+(Number(i.cost)||0),0);
+  const taxi=items.filter(i=>i.type==='taxi').reduce((s,i)=>s+(Number(i.cost)||0),0);
+  if(!total){
+    splitBox.innerHTML=`<div class="split-row"><span>住宿總額</span><b>$${lodging.toLocaleString()}</b></div>
+      <div class="split-row"><span>計程車總額</span><b>$${taxi.toLocaleString()}</b></div>
+      <div class="empty">還沒有人填「填我的」，無法計算平均分攤</div>`;
+  }else{
+    const grand=lodging+taxi;
+    splitBox.innerHTML=`
+      <div class="split-row"><span>已填答人數</span><b>${total} 人</b></div>
+      <div class="split-row"><span>住宿總額</span><b>$${lodging.toLocaleString()}</b></div>
+      <div class="split-row"><span>計程車總額</span><b>$${taxi.toLocaleString()}</b></div>
+      <div class="split-row"><span>每人住宿分攤</span><b>$${Math.ceil(lodging/total).toLocaleString()}</b></div>
+      <div class="split-row"><span>每人計程車分攤</span><b>$${Math.ceil(taxi/total).toLocaleString()}</b></div>
+      <div class="split-row"><span>每人總計</span><b>$${Math.ceil(grand/total).toLocaleString()}</b></div>`;
+  }
 }
 
 /* ---- 初始化 ---- */
