@@ -294,10 +294,23 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
   <div id="vEvent" class="hide">
     <button class="back" onclick="goHome()">← 回聚會列表</button>
     <div class="ev-head">
-      <div class="name" id="eName"></div>
-      <div class="desc" id="eDesc"></div>
-      <div class="share-line">
-        <button class="btn-ghost" onclick="copyLink()">🔗 複製這個聚會的連結</button>
+      <div id="eView">
+        <div class="name" id="eName"></div>
+        <div class="desc" id="eDesc"></div>
+        <div class="share-line">
+          <button class="btn-ghost" onclick="copyLink()">🔗 複製這個聚會的連結</button>
+          <button class="btn-ghost" onclick="startEditEvent()">✏️ 編輯名稱/介紹</button>
+        </div>
+      </div>
+      <div id="eEdit" class="hide">
+        <label class="f">聚會名稱</label>
+        <input type="text" id="eEditName">
+        <label class="f">說明（可留空）</label>
+        <textarea id="eEditDesc"></textarea>
+        <div class="row2" style="margin-top:10px">
+          <button class="btn-main" style="margin-top:0" onclick="saveEditEvent()">儲存</button>
+          <button class="btn-ghost" onclick="cancelEditEvent()">取消</button>
+        </div>
       </div>
     </div>
     <div class="tabs">
@@ -397,6 +410,9 @@ async function dbEventById(id){
 async function dbCreateEvent(ev){
   const{error}=await sb.from('qiao_events').insert(ev);if(error)throw error;
 }
+async function dbUpdateEvent(id,updates){
+  const{error}=await sb.from('qiao_events').update(updates).eq('id',id);if(error)throw error;
+}
 async function dbDeleteEvent(id){
   await sb.from('qiao_responses').delete().eq('event_id',id);
   await sb.from('qiao_proposals').delete().eq('event_id',id);
@@ -489,6 +505,7 @@ function openEvent(ev){
   document.getElementById('vEvent').classList.remove('hide');
   document.getElementById('eName').textContent=ev.name;
   document.getElementById('eDesc').textContent=ev.descr||'';
+  cancelEditEvent();
   buildFillUI();switchTab('fill');
   window.scrollTo(0,0);
 }
@@ -498,6 +515,27 @@ function copyLink(){
     navigator.clipboard.writeText(url).then(()=>toast('已複製，貼到 LINE 群吧！'))
       .catch(()=>prompt('手動複製這個連結：',url));
   }else prompt('手動複製這個連結：',url);
+}
+function startEditEvent(){
+  document.getElementById('eEditName').value=curEvent.name;
+  document.getElementById('eEditDesc').value=curEvent.descr||'';
+  document.getElementById('eView').classList.add('hide');
+  document.getElementById('eEdit').classList.remove('hide');
+}
+function cancelEditEvent(){
+  document.getElementById('eEdit').classList.add('hide');
+  document.getElementById('eView').classList.remove('hide');
+}
+async function saveEditEvent(){
+  const name=document.getElementById('eEditName').value.trim();
+  const descr=document.getElementById('eEditDesc').value.trim();
+  if(!name){toast('聚會名稱不能空白');return}
+  try{await dbUpdateEvent(curEvent.id,{name,descr})}catch(e){toast('儲存失敗，請再試一次');return}
+  curEvent.name=name;curEvent.descr=descr;
+  document.getElementById('eName').textContent=name;
+  document.getElementById('eDesc').textContent=descr;
+  cancelEditEvent();
+  toast('已更新聚會資訊');
 }
 function switchTab(t){
   ['fill','result','prop'].forEach(x=>{
