@@ -285,7 +285,7 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
           <input type="date" id="cEnd">
         </div>
       </div>
-      <button class="btn-main" onclick="createEvent()">建立聚會</button>
+      <button class="btn-main" onclick="createMeetupEvent()">建立聚會</button>
       <p class="note">建立後點進聚會，用「複製這個聚會的連結」把網址丟到 LINE 群，朋友點開會直接進到這個聚會填寫。</p>
     </div>
   </div>
@@ -460,7 +460,7 @@ async function removeEvent(id){
   try{await dbDeleteEvent(id);toast('已刪除')}catch(e){toast('刪除失敗，請再試一次')}
   loadHome();
 }
-async function createEvent(){
+async function createMeetupEvent(){
   if(needCfg())return;
   const name=document.getElementById('cName').value.trim();
   const start=document.getElementById('cStart').value,end=document.getElementById('cEnd').value;
