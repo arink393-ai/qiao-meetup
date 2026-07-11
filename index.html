@@ -277,6 +277,11 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .itin-item .who{font-size:.72rem;color:var(--ink-soft);margin-top:2px}
 .itin-item .nt{font-size:.78rem;color:var(--ink-soft);margin-top:2px;white-space:pre-wrap}
 .itin-item .del{font-size:.7rem;color:var(--stamp);text-decoration:underline;margin-top:4px;background:none;padding:0}
+.itin-item .edit{font-size:.7rem;color:var(--ink-soft);text-decoration:underline;margin-top:4px;margin-right:12px;background:none;padding:0}
+.edit-banner{
+  background:var(--green-soft);border:1.5px solid var(--green);border-radius:10px;
+  padding:9px 12px;font-size:.82rem;color:var(--green);margin-bottom:10px;font-weight:700;
+}
 .split-row{display:flex;justify-content:space-between;font-size:.9rem;padding:7px 0;border-bottom:1px dashed var(--line)}
 .split-row:last-child{border-bottom:none}
 .split-row b{color:var(--green)}
@@ -414,6 +419,7 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
     <div id="pItin" class="hide">
       <div class="card">
         <h2><span class="dot"></span>新增行程／花費</h2>
+        <div id="itinEditBanner" class="edit-banner hide">✏️ 編輯模式：修改後按「更新這筆」送出</div>
         <div class="row2">
           <div>
             <label class="f">日期</label>
@@ -446,7 +452,8 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
         <div id="itinParticipants" class="chips"></div>
         <label class="f">備註（可留空）</label>
         <textarea id="itinNote" placeholder="訂房代碼、注意事項⋯"></textarea>
-        <button class="btn-main" onclick="addItinItem()">新增這筆</button>
+        <button class="btn-main" id="itinSubmitBtn" onclick="submitItinItem()">新增這筆</button>
+        <button class="btn-ghost hide" id="itinCancelBtn" onclick="cancelEditItin()" style="margin-top:8px">取消編輯</button>
       </div>
       <div class="card">
         <h2><span class="dot"></span>行程時間軸</h2>
@@ -487,9 +494,12 @@ const ITIN_LABEL={activity:'行程／景點',lodging:'住宿',taxi:'計程車'};
 let curEvent=null;
 let fillState={dates:{},cities:new Set()};
 let itinParticipantSel=new Set();
+let editingItinId=null;
+let lastItinNames=[];
 
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2400)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function safeVotes(p){return Array.isArray(p&&p.votes)?p.votes:[]}
 function fmtD(iso){const d=new Date(iso+'T00:00:00');return (d.getMonth()+1)+'/'+d.getDate()}
 function wdOf(iso){return new Date(iso+'T00:00:00').getDay()}
 function dateRange(s,e){
@@ -526,6 +536,9 @@ async function dbItinerary(eid){
 }
 async function dbAddItinerary(item){
   const{error}=await sb.from('qiao_itinerary').insert(item);if(error)throw error;
+}
+async function dbUpdateItinerary(id,fields){
+  const{error}=await sb.from('qiao_itinerary').update(fields).eq('id',id);if(error)throw error;
 }
 async function dbDeleteItinerary(id){
   const{error}=await sb.from('qiao_itinerary').delete().eq('id',id);if(error)throw error;
@@ -841,22 +854,22 @@ async function renderProps(){
   let props=[];
   try{props=await dbProposals(curEvent.id)}catch(e){box.innerHTML='<div class="empty">讀取失敗，請再試一次</div>';return}
   if(!props.length){box.innerHTML='<div class="empty">還沒有提案，搶頭香！</div>';return}
-  props.sort((a,b)=>b.votes.length-a.votes.length||(a.created_at||'').localeCompare(b.created_at||''));
+  props.sort((a,b)=>safeVotes(b).length-safeVotes(a).length||(a.created_at||'').localeCompare(b.created_at||''));
   const me=document.getElementById('propName').value.trim();
   box.innerHTML='';
   props.forEach(p=>{
     const div=document.createElement('div');div.className='prop';
-    const voted=me&&p.votes.includes(me);
-    div.innerHTML=`<button class="vote ${voted?'on':''}">👍 ${p.votes.length}</button>
+    const voted=me&&safeVotes(p).includes(me);
+    div.innerHTML=`<button class="vote ${voted?'on':''}">👍 ${safeVotes(p).length}</button>
       <div class="body"><div class="txt">${esc(p.content)}</div>
-      <div class="meta">by ${esc(p.author)}｜+1：${p.votes.map(esc).join('、')||'—'}</div></div>`;
+      <div class="meta">by ${esc(p.author)}｜+1：${safeVotes(p).map(esc).join('、')||'—'}</div></div>`;
     div.querySelector('.vote').addEventListener('click',async()=>{
       const name=document.getElementById('propName').value.trim();
       if(!name){toast('先在上面填你的名字才能 +1');return}
       let fresh=null;
       try{fresh=await dbGetProposal(p.id)}catch(e){toast('失敗，請再試');return}
       if(!fresh){toast('這個提案已被刪除');renderProps();return}
-      const set=new Set(fresh.votes||[]);
+      const set=new Set(safeVotes(fresh));
       set.has(name)?set.delete(name):set.add(name);
       try{await dbUpdateVotes(p.id,[...set])}catch(e){toast('失敗，請再試');return}
       renderProps();
@@ -879,7 +892,37 @@ function buildParticipantChips(names){
     box.appendChild(b);
   });
 }
-async function addItinItem(){
+function resetItinForm(){
+  editingItinId=null;
+  document.getElementById('itinTitle').value='';
+  document.getElementById('itinCost').value='';
+  document.getElementById('itinNote').value='';
+  document.getElementById('itinStart').value='';
+  document.getElementById('itinEnd').value='';
+  itinParticipantSel=new Set();
+  buildParticipantChips(lastItinNames);
+  document.getElementById('itinSubmitBtn').textContent='新增這筆';
+  document.getElementById('itinCancelBtn').classList.add('hide');
+  document.getElementById('itinEditBanner').classList.add('hide');
+}
+function cancelEditItin(){resetItinForm();toast('已取消編輯')}
+function startEditItin(it){
+  editingItinId=it.id;
+  document.getElementById('itinDate').value=it.date||'';
+  document.getElementById('itinType').value=it.type||'activity';
+  document.getElementById('itinStart').value=it.start_time||'';
+  document.getElementById('itinEnd').value=it.end_time||'';
+  document.getElementById('itinTitle').value=it.title||'';
+  document.getElementById('itinCost').value=(it.cost===null||it.cost===undefined||Number(it.cost)===0)?'':it.cost;
+  document.getElementById('itinNote').value=it.note||'';
+  itinParticipantSel=new Set(Array.isArray(it.participants)?it.participants:[]);
+  buildParticipantChips(lastItinNames);
+  document.getElementById('itinSubmitBtn').textContent='更新這筆';
+  document.getElementById('itinCancelBtn').classList.remove('hide');
+  document.getElementById('itinEditBanner').classList.remove('hide');
+  document.getElementById('itinDate').scrollIntoView({behavior:'smooth',block:'center'});
+}
+async function submitItinItem(){
   if(needCfg())return;
   const date=document.getElementById('itinDate').value;
   const type=document.getElementById('itinType').value;
@@ -892,20 +935,25 @@ async function addItinItem(){
   if(!title){toast('請填內容／地點名稱');return}
   const cost=costRaw?Number(costRaw):0;
   if(costRaw&&(isNaN(cost)||cost<0)){toast('金額請輸入正確的數字');return}
-  const item={id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),
-    event_id:curEvent.id,date,start_time:start||null,end_time:end||null,
+  const fields={date,start_time:start||null,end_time:end||null,
     type,title,cost,note,participants:[...itinParticipantSel]};
-  try{await dbAddItinerary(item)}catch(e){toast('新增失敗，請再試一次');return}
-  document.getElementById('itinTitle').value='';
-  document.getElementById('itinCost').value='';
-  document.getElementById('itinNote').value='';
-  itinParticipantSel=new Set();
-  toast('已新增行程');
+  try{
+    if(editingItinId){
+      await dbUpdateItinerary(editingItinId,fields);
+      toast('已更新行程');
+    }else{
+      await dbAddItinerary({id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+        event_id:curEvent.id,...fields});
+      toast('已新增行程');
+    }
+  }catch(e){toast((editingItinId?'更新':'新增')+'失敗：'+(e.message||'請再試一次'));return}
+  resetItinForm();
   renderItinerary();
 }
 async function removeItinItem(id){
   if(!confirm('刪除這筆行程／花費？'))return;
   try{await dbDeleteItinerary(id)}catch(e){toast('刪除失敗，請再試一次');return}
+  if(editingItinId===id)resetItinForm();
   renderItinerary();
 }
 async function renderItinerary(){
@@ -917,11 +965,13 @@ async function renderItinerary(){
   try{
     [items,resp]=await Promise.all([dbItinerary(curEvent.id),dbResponses(curEvent.id)]);
   }catch(e){
-    box.innerHTML='<div class="empty">讀取失敗，請再試一次</div>';
+    const msg=esc(e&&e.message?e.message:'未知錯誤');
+    box.innerHTML=`<div class="empty">讀取失敗：${msg}</div>`;
     splitBox.innerHTML='<div class="empty">讀取失敗，請再試一次</div>';
     return;
   }
   const allNames=resp.map(r=>r.name);
+  lastItinNames=allNames;
   buildParticipantChips(allNames);
   const effOf=it=>(it.participants&&it.participants.length)?it.participants:allNames;
   if(!items.length){
@@ -944,13 +994,17 @@ async function renderItinerary(){
           ${it.cost?`<div class="cost">$${Number(it.cost).toLocaleString()}${isPaid&&eff.length?`｜${eff.length} 人分攤，每人 $${per.toLocaleString()}`:''}</div>`:''}
           ${isPaid&&eff.length?`<div class="who">分攤：${eff.map(esc).join('、')}</div>`:''}
           ${it.note?`<div class="nt">${esc(it.note)}</div>`:''}
-          <button class="del" data-id="${it.id}">刪除</button>
+          <button class="edit" data-id="${it.id}">✏️ 編輯</button><button class="del" data-id="${it.id}">刪除</button>
         </div>`;
       });
       html+='</div></div>';
     });
     box.innerHTML=html;
     box.querySelectorAll('.del').forEach(b=>b.addEventListener('click',()=>removeItinItem(b.dataset.id)));
+    box.querySelectorAll('.edit').forEach(b=>b.addEventListener('click',()=>{
+      const it=items.find(x=>x.id===b.dataset.id);
+      if(it)startEditItin(it);
+    }));
   }
   const lodging=items.filter(i=>i.type==='lodging').reduce((s,i)=>s+(Number(i.cost)||0),0);
   const taxi=items.filter(i=>i.type==='taxi').reduce((s,i)=>s+(Number(i.cost)||0),0);
