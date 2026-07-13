@@ -264,7 +264,10 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
   background:var(--green);box-shadow:0 0 0 2px #fff;
 }
 .itin-item.lodging::before{background:var(--amber)}
-.itin-item.taxi::before{background:var(--stamp)}
+.itin-item.taxi::before,.itin-item.transport::before{background:#3d6fb4}
+.itin-item.food::before{background:#d96c2c}
+.itin-item.ticket::before{background:#7c5cb0}
+.itin-item.other::before{background:var(--ink-soft)}
 .itin-item .time{font-size:.75rem;color:var(--ink-soft);font-weight:700}
 .itin-item .ttl{font-size:.95rem;font-weight:700;margin-top:1px}
 .itin-item .tag{
@@ -272,7 +275,10 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
   background:var(--green-soft);color:var(--green);font-weight:700;vertical-align:1px;
 }
 .itin-item.lodging .tag{background:#fff3de;color:#946600}
-.itin-item.taxi .tag{background:#fbe4e2;color:var(--stamp)}
+.itin-item.taxi .tag,.itin-item.transport .tag{background:#e3ecf7;color:#3d6fb4}
+.itin-item.food .tag{background:#fbeadd;color:#b3541e}
+.itin-item.ticket .tag{background:#efe8f8;color:#7c5cb0}
+.itin-item.other .tag{background:#e8ebee;color:var(--ink-soft)}
 .itin-item .cost{font-size:.8rem;color:var(--ink-soft);margin-top:2px}
 .itin-item .who{font-size:.72rem;color:var(--ink-soft);margin-top:2px}
 .itin-item .nt{font-size:.78rem;color:var(--ink-soft);margin-top:2px;white-space:pre-wrap}
@@ -429,8 +435,12 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
             <label class="f">種類</label>
             <select id="itinType">
               <option value="activity">行程／景點</option>
+              <option value="food">餐飲</option>
               <option value="lodging">住宿</option>
+              <option value="transport">交通</option>
               <option value="taxi">計程車</option>
+              <option value="ticket">門票</option>
+              <option value="other">其他</option>
             </select>
           </div>
         </div>
@@ -446,7 +456,7 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
         </div>
         <label class="f">內容／地點名稱</label>
         <input type="text" id="itinTitle" placeholder="例如：貓空纜車、老爺酒店高雄館">
-        <label class="f">金額（住宿／計程車才需要填，會拿去算分攤）</label>
+        <label class="f">金額（有填金額的項目都會列入費用分攤試算，純行程可留空）</label>
         <input type="text" inputmode="decimal" id="itinCost" placeholder="例如：3200">
         <label class="f">分攤人選（不勾就預設「填我的」全部人平均分攤）</label>
         <div id="itinParticipants" class="chips"></div>
@@ -489,7 +499,7 @@ const CITIES={
 };
 const SLOTS=[['am','早'],['pm','午'],['ev','晚']];
 const WD=['日','一','二','三','四','五','六'];
-const ITIN_LABEL={activity:'行程／景點',lodging:'住宿',taxi:'計程車'};
+const ITIN_LABEL={activity:'行程／景點',food:'餐飲',lodging:'住宿',transport:'交通',taxi:'計程車',ticket:'門票',other:'其他'};
 
 let curEvent=null;
 let fillState={dates:{},cities:new Set()};
@@ -985,7 +995,7 @@ async function renderItinerary(){
       html+=`<div class="itin-day"><div class="d-title">${fmtD(d)}（${WD[wdOf(d)]}）</div><div class="itin-track">`;
       byDate[d].forEach(it=>{
         const timeStr=it.start_time?(it.start_time+(it.end_time?'–'+it.end_time:'')):'時間未定';
-        const isPaid=(it.type==='lodging'||it.type==='taxi')&&Number(it.cost)>0;
+        const isPaid=Number(it.cost)>0;
         const eff=isPaid?effOf(it):[];
         const per=isPaid&&eff.length?Math.ceil(Number(it.cost)/eff.length):0;
         html+=`<div class="itin-item ${it.type}">
@@ -1006,25 +1016,32 @@ async function renderItinerary(){
       if(it)startEditItin(it);
     }));
   }
-  const lodging=items.filter(i=>i.type==='lodging').reduce((s,i)=>s+(Number(i.cost)||0),0);
-  const taxi=items.filter(i=>i.type==='taxi').reduce((s,i)=>s+(Number(i.cost)||0),0);
+  const catTotals={};
+  items.forEach(i=>{
+    const c=Number(i.cost)||0;
+    if(c>0)catTotals[i.type]=(catTotals[i.type]||0)+c;
+  });
   const personTotals={};
-  items.filter(i=>(i.type==='lodging'||i.type==='taxi')&&Number(i.cost)>0).forEach(i=>{
+  items.filter(i=>Number(i.cost)>0).forEach(i=>{
     const eff=effOf(i);
     if(!eff.length)return;
     const share=Number(i.cost)/eff.length;
     eff.forEach(n=>{personTotals[n]=(personTotals[n]||0)+share});
   });
   const personRows=Object.entries(personTotals).sort((a,b)=>b[1]-a[1]);
-  let html=`<div class="split-row"><span>住宿總額</span><b>$${lodging.toLocaleString()}</b></div>
-    <div class="split-row"><span>計程車總額</span><b>$${taxi.toLocaleString()}</b></div>`;
+  const grand=Object.values(catTotals).reduce((s,v)=>s+v,0);
+  let html='';
+  Object.entries(catTotals).forEach(([t,amt])=>{
+    html+=`<div class="split-row"><span>${ITIN_LABEL[t]||t}總額</span><b>$${amt.toLocaleString()}</b></div>`;
+  });
+  if(grand)html+=`<div class="split-row"><span>全部總額</span><b>$${grand.toLocaleString()}</b></div>`;
   if(personRows.length){
     html+='<p class="note" style="margin:10px 0 4px">每人應付總額（依各筆行程勾選的分攤人選計算）</p>';
     personRows.forEach(([n,amt])=>{
       html+=`<div class="split-row"><span>${esc(n)}</span><b>$${Math.ceil(amt).toLocaleString()}</b></div>`;
     });
   }else{
-    html+='<div class="empty">目前沒有已設定金額的住宿／計程車項目</div>';
+    html+='<div class="empty">目前沒有已填金額的項目</div>';
   }
   splitBox.innerHTML=html;
 }
