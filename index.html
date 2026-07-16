@@ -49,6 +49,8 @@
   );
   -- 如果 qiao_itinerary 已經存在（沒有 participants 欄位），另外執行：
   -- alter table qiao_itinerary add column if not exists participants jsonb default '[]'::jsonb;
+  -- 加入「誰先墊付」功能需要的欄位（既有表執行這行即可）：
+  -- alter table qiao_itinerary add column if not exists payer text default '';
   alter table qiao_events enable row level security;
   alter table qiao_responses enable row level security;
   alter table qiao_proposals enable row level security;
@@ -460,6 +462,8 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
         <input type="text" inputmode="decimal" id="itinCost" placeholder="例如：3200">
         <label class="f">分攤人選（不勾就預設「填我的」全部人平均分攤）</label>
         <div id="itinParticipants" class="chips"></div>
+        <label class="f">誰先墊付（選了才會列入「誰給誰」結算）</label>
+        <select id="itinPayer"><option value="">未指定</option></select>
         <label class="f">備註（可留空）</label>
         <textarea id="itinNote" placeholder="訂房代碼、注意事項⋯"></textarea>
         <button class="btn-main" id="itinSubmitBtn" onclick="submitItinItem()">新增這筆</button>
@@ -892,7 +896,7 @@ async function renderProps(){
 function buildParticipantChips(names){
   const box=document.getElementById('itinParticipants');
   box.innerHTML='';
-  if(!names.length){box.innerHTML='<span class="note" style="margin:0">還沒有人填「填我的」，無法勾選</span>';return}
+  if(!names.length){box.innerHTML='<span class="note" style="margin:0">還沒有人填「填我的」，無法勾選</span>';}
   names.forEach(n=>{
     const b=document.createElement('button');b.className='chip'+(itinParticipantSel.has(n)?' on':'');b.textContent=n;
     b.addEventListener('click',()=>{
@@ -901,6 +905,10 @@ function buildParticipantChips(names){
     });
     box.appendChild(b);
   });
+  const sel=document.getElementById('itinPayer');
+  const keep=sel.value;
+  sel.innerHTML='<option value="">未指定</option>'+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  if(keep&&names.includes(keep))sel.value=keep;
 }
 function resetItinForm(){
   editingItinId=null;
@@ -909,6 +917,7 @@ function resetItinForm(){
   document.getElementById('itinNote').value='';
   document.getElementById('itinStart').value='';
   document.getElementById('itinEnd').value='';
+  document.getElementById('itinPayer').value='';
   itinParticipantSel=new Set();
   buildParticipantChips(lastItinNames);
   document.getElementById('itinSubmitBtn').textContent='新增這筆';
@@ -927,6 +936,7 @@ function startEditItin(it){
   document.getElementById('itinNote').value=it.note||'';
   itinParticipantSel=new Set(Array.isArray(it.participants)?it.participants:[]);
   buildParticipantChips(lastItinNames);
+  document.getElementById('itinPayer').value=it.payer||'';
   document.getElementById('itinSubmitBtn').textContent='更新這筆';
   document.getElementById('itinCancelBtn').classList.remove('hide');
   document.getElementById('itinEditBanner').classList.remove('hide');
@@ -946,7 +956,8 @@ async function submitItinItem(){
   const cost=costRaw?Number(costRaw):0;
   if(costRaw&&(isNaN(cost)||cost<0)){toast('金額請輸入正確的數字');return}
   const fields={date,start_time:start||null,end_time:end||null,
-    type,title,cost,note,participants:[...itinParticipantSel]};
+    type,title,cost,note,participants:[...itinParticipantSel],
+    payer:document.getElementById('itinPayer').value||''};
   try{
     if(editingItinId){
       await dbUpdateItinerary(editingItinId,fields);
@@ -1003,6 +1014,7 @@ async function renderItinerary(){
           <div class="ttl">${esc(it.title)}</div>
           ${it.cost?`<div class="cost">$${Number(it.cost).toLocaleString()}${isPaid&&eff.length?`｜${eff.length} 人分攤，每人 $${per.toLocaleString()}`:''}</div>`:''}
           ${isPaid&&eff.length?`<div class="who">分攤：${eff.map(esc).join('、')}</div>`:''}
+          ${it.payer?`<div class="who">💳 ${esc(it.payer)} 先墊付</div>`:''}
           ${it.note?`<div class="nt">${esc(it.note)}</div>`:''}
           <button class="edit" data-id="${it.id}">✏️ 編輯</button><button class="del" data-id="${it.id}">刪除</button>
         </div>`;
@@ -1042,6 +1054,42 @@ async function renderItinerary(){
     });
   }else{
     html+='<div class="empty">目前沒有已填金額的項目</div>';
+  }
+  // ---- 墊付結算：誰給誰 ----
+  const paidItems=items.filter(i=>Number(i.cost)>0&&i.payer);
+  if(paidItems.length){
+    const bal={};   // 正數＝應收回，負數＝應付出
+    paidItems.forEach(i=>{
+      const c=Number(i.cost);
+      const eff=effOf(i);
+      if(!eff.length)return;
+      bal[i.payer]=(bal[i.payer]||0)+c;
+      eff.forEach(n=>{bal[n]=(bal[n]||0)-c/eff.length});
+    });
+    html+='<p class="note" style="margin:14px 0 4px">💳 墊付結算（只計入有選「誰先墊付」的項目）</p>';
+    Object.entries(bal).sort((a,b)=>b[1]-a[1]).forEach(([n,v])=>{
+      const r=Math.round(v);
+      if(!r)return;
+      html+=`<div class="split-row"><span>${esc(n)}</span><b style="color:${r>0?'var(--green)':'var(--stamp)'}">${r>0?'應收回':'應付出'} $${Math.abs(r).toLocaleString()}</b></div>`;
+    });
+    // 用最少轉帳次數把帳結平
+    const creditors=Object.entries(bal).filter(([,v])=>v>0.5).map(([n,v])=>({n,v})).sort((a,b)=>b.v-a.v);
+    const debtors=Object.entries(bal).filter(([,v])=>v<-0.5).map(([n,v])=>({n,v:-v})).sort((a,b)=>b.v-a.v);
+    const transfers=[];
+    let ci=0,di=0;
+    while(ci<creditors.length&&di<debtors.length){
+      const pay=Math.min(creditors[ci].v,debtors[di].v);
+      transfers.push([debtors[di].n,creditors[ci].n,pay]);
+      creditors[ci].v-=pay;debtors[di].v-=pay;
+      if(creditors[ci].v<0.5)ci++;
+      if(debtors[di].v<0.5)di++;
+    }
+    if(transfers.length){
+      html+='<p class="note" style="margin:10px 0 4px">建議轉帳（最少次數結清）</p>';
+      transfers.forEach(([from,to,amt])=>{
+        html+=`<div class="split-row"><span>${esc(from)} ➔ ${esc(to)}</span><b>$${Math.round(amt).toLocaleString()}</b></div>`;
+      });
+    }
   }
   splitBox.innerHTML=html;
 }
