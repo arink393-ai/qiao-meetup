@@ -51,6 +51,9 @@
   -- alter table qiao_itinerary add column if not exists participants jsonb default '[]'::jsonb;
   -- 加入「誰先墊付」功能需要的欄位（既有表執行這行即可）：
   -- alter table qiao_itinerary add column if not exists payer text default '';
+  -- 加入「餐飲逐人分帳＋服務費」需要的欄位（既有表執行這兩行）：
+  -- alter table qiao_itinerary add column if not exists food_shares jsonb;
+  -- alter table qiao_itinerary add column if not exists service_pct numeric default 0;
   alter table qiao_events enable row level security;
   alter table qiao_responses enable row level security;
   alter table qiao_proposals enable row level security;
@@ -291,6 +294,12 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
   padding:9px 12px;font-size:.82rem;color:var(--green);margin-bottom:10px;font-weight:700;
 }
 .split-row{display:flex;justify-content:space-between;font-size:.9rem;padding:7px 0;border-bottom:1px dashed var(--line)}
+.food-box{background:#fbeadd55;border:1.5px solid #f0d3bd;border-radius:12px;padding:12px;margin:4px 0 2px}
+.food-row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.food-row .nm{flex:1;font-size:.92rem;font-weight:600}
+.food-row input{flex:none;width:110px;padding:8px 10px}
+.food-sum{font-size:.8rem;color:#8a5a30;line-height:1.9;margin-top:6px;padding-top:8px;border-top:1px dashed #e0c3a8}
+.food-sum b{color:#b3541e}
 .split-row:last-child{border-bottom:none}
 .split-row b{color:var(--green)}
 /* ---- 其他 ---- */
@@ -435,7 +444,7 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
           </div>
           <div>
             <label class="f">種類</label>
-            <select id="itinType">
+            <select id="itinType" onchange="onItinTypeChange()">
               <option value="activity">行程／景點</option>
               <option value="food">餐飲</option>
               <option value="lodging">住宿</option>
@@ -458,9 +467,16 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
         </div>
         <label class="f">內容／地點名稱</label>
         <input type="text" id="itinTitle" placeholder="例如：貓空纜車、老爺酒店高雄館">
-        <label class="f">金額（有填金額的項目都會列入費用分攤試算，純行程可留空）</label>
+        <label class="f" id="itinCostLabel">金額（有填金額的項目都會列入費用分攤試算，純行程可留空）</label>
         <input type="text" inputmode="decimal" id="itinCost" placeholder="例如：3200">
-        <label class="f">分攤人選（不勾就預設「填我的」全部人平均分攤）</label>
+        <div id="foodBlock" class="hide">
+          <label class="f">每人餐點金額（各自不同，沒點的留空）</label>
+          <div id="foodRows" class="food-box"></div>
+          <label class="f">服務費 %（沒有可填 0，會平均分攤給有點餐的人）</label>
+          <input type="text" inputmode="decimal" id="itinService" placeholder="例如：10" value="10" oninput="computeFood()">
+          <div id="foodSummary" class="food-sum"></div>
+        </div>
+        <label class="f" id="itinPartLabel">分攤人選（不勾就預設「填我的」全部人平均分攤）</label>
         <div id="itinParticipants" class="chips"></div>
         <label class="f">誰先墊付（選了才會列入「誰給誰」結算）</label>
         <select id="itinPayer"><option value="">未指定</option></select>
@@ -510,6 +526,7 @@ let fillState={dates:{},cities:new Set()};
 let itinParticipantSel=new Set();
 let editingItinId=null;
 let lastItinNames=[];
+let foodSharesState={};
 
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2400)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -918,8 +935,11 @@ function resetItinForm(){
   document.getElementById('itinStart').value='';
   document.getElementById('itinEnd').value='';
   document.getElementById('itinPayer').value='';
+  document.getElementById('itinService').value='10';
   itinParticipantSel=new Set();
+  foodSharesState={};
   buildParticipantChips(lastItinNames);
+  onItinTypeChange();
   document.getElementById('itinSubmitBtn').textContent='新增這筆';
   document.getElementById('itinCancelBtn').classList.add('hide');
   document.getElementById('itinEditBanner').classList.add('hide');
@@ -937,10 +957,59 @@ function startEditItin(it){
   itinParticipantSel=new Set(Array.isArray(it.participants)?it.participants:[]);
   buildParticipantChips(lastItinNames);
   document.getElementById('itinPayer').value=it.payer||'';
+  // 餐飲：還原逐人金額與服務費
+  foodSharesState=(it.food_shares&&typeof it.food_shares==='object')?{...it.food_shares}:{};
+  document.getElementById('itinService').value=(it.service_pct!==undefined&&it.service_pct!==null)?it.service_pct:'10';
+  onItinTypeChange();
   document.getElementById('itinSubmitBtn').textContent='更新這筆';
   document.getElementById('itinCancelBtn').classList.remove('hide');
   document.getElementById('itinEditBanner').classList.remove('hide');
   document.getElementById('itinDate').scrollIntoView({behavior:'smooth',block:'center'});
+}
+function isFood(){return document.getElementById('itinType').value==='food'}
+function onItinTypeChange(){
+  const food=isFood();
+  document.getElementById('foodBlock').classList.toggle('hide',!food);
+  // 餐飲模式：金額由逐人加總自動算，隱藏手動金額欄與整筆分攤人選
+  document.getElementById('itinCost').classList.toggle('hide',food);
+  document.getElementById('itinCostLabel').classList.toggle('hide',food);
+  document.getElementById('itinPartLabel').classList.toggle('hide',food);
+  document.getElementById('itinParticipants').classList.toggle('hide',food);
+  if(food)buildFoodRows(lastItinNames);
+}
+function buildFoodRows(names){
+  const box=document.getElementById('foodRows');
+  box.innerHTML='';
+  if(!names.length){box.innerHTML='<span class="note" style="margin:0">還沒有人填「填我的」，無法逐人分帳</span>';computeFood();return}
+  names.forEach(n=>{
+    const row=document.createElement('div');row.className='food-row';
+    const val=(foodSharesState[n]!==undefined&&foodSharesState[n]!==null)?foodSharesState[n]:'';
+    row.innerHTML=`<span class="nm">${esc(n)}</span>`;
+    const inp=document.createElement('input');
+    inp.type='text';inp.inputMode='decimal';inp.placeholder='0';inp.value=val;inp.dataset.n=n;
+    inp.addEventListener('input',()=>{
+      const v=inp.value.trim();
+      if(v===''||isNaN(v))delete foodSharesState[n];
+      else foodSharesState[n]=Number(v);
+      computeFood();
+    });
+    row.appendChild(inp);box.appendChild(row);
+  });
+  computeFood();
+}
+function computeFood(){
+  const svcRaw=document.getElementById('itinService').value.trim();
+  const svcPct=svcRaw&&!isNaN(svcRaw)?Number(svcRaw):0;
+  const eaters=Object.keys(foodSharesState).filter(n=>Number(foodSharesState[n])>0);
+  const subtotal=eaters.reduce((s,n)=>s+Number(foodSharesState[n]),0);
+  const service=Math.round(subtotal*svcPct/100);
+  const grand=subtotal+service;
+  const svcEach=eaters.length?service/eaters.length:0;
+  const box=document.getElementById('foodSummary');
+  if(!eaters.length){box.innerHTML='填入金額後這裡會即時試算';return}
+  let html=`小計 $${subtotal.toLocaleString()}　服務費 ${svcPct}% = $${service.toLocaleString()}　<b>總計 $${grand.toLocaleString()}</b><br>`;
+  html+=eaters.map(n=>`${esc(n)} $${Math.round(Number(foodSharesState[n])+svcEach).toLocaleString()}`).join('　');
+  box.innerHTML=html;
 }
 async function submitItinItem(){
   if(needCfg())return;
@@ -953,11 +1022,23 @@ async function submitItinItem(){
   const note=document.getElementById('itinNote').value.trim();
   if(!date){toast('請選日期');return}
   if(!title){toast('請填內容／地點名稱');return}
-  const cost=costRaw?Number(costRaw):0;
+  let cost=costRaw?Number(costRaw):0;
   if(costRaw&&(isNaN(cost)||cost<0)){toast('金額請輸入正確的數字');return}
+  let food_shares=null,service_pct=0,participants=[...itinParticipantSel];
+  if(type==='food'){
+    const eaters=Object.keys(foodSharesState).filter(n=>Number(foodSharesState[n])>0);
+    if(!eaters.length){toast('請至少填一位的餐點金額');return}
+    const svcRaw=document.getElementById('itinService').value.trim();
+    service_pct=svcRaw&&!isNaN(svcRaw)?Number(svcRaw):0;
+    food_shares={};eaters.forEach(n=>{food_shares[n]=Number(foodSharesState[n])});
+    const subtotal=eaters.reduce((s,n)=>s+food_shares[n],0);
+    cost=subtotal+Math.round(subtotal*service_pct/100);
+    participants=eaters; // 餐飲分攤對象就是有點餐的人
+  }
   const fields={date,start_time:start||null,end_time:end||null,
-    type,title,cost,note,participants:[...itinParticipantSel],
-    payer:document.getElementById('itinPayer').value||''};
+    type,title,cost,note,participants,
+    payer:document.getElementById('itinPayer').value||'',
+    food_shares,service_pct};
   try{
     if(editingItinId){
       await dbUpdateItinerary(editingItinId,fields);
@@ -994,7 +1075,26 @@ async function renderItinerary(){
   const allNames=resp.map(r=>r.name);
   lastItinNames=allNames;
   buildParticipantChips(allNames);
+  if(isFood())buildFoodRows(allNames);
   const effOf=it=>(it.participants&&it.participants.length)?it.participants:allNames;
+  // 回傳 {name: 該項目此人應付金額} —— 餐飲用逐人金額+平均服務費，其餘平均分攤
+  const perPersonCost=it=>{
+    const out={};
+    const total=Number(it.cost)||0;
+    if(it.type==='food'&&it.food_shares&&typeof it.food_shares==='object'){
+      const eaters=Object.keys(it.food_shares).filter(n=>Number(it.food_shares[n])>0);
+      if(eaters.length){
+        const subtotal=eaters.reduce((s,n)=>s+Number(it.food_shares[n]),0);
+        const service=total-subtotal;               // 服務費＝總額扣掉小計
+        const svcEach=service/eaters.length;
+        eaters.forEach(n=>{out[n]=Number(it.food_shares[n])+svcEach});
+        return out;
+      }
+    }
+    const eff=effOf(it);
+    if(total>0&&eff.length){const share=total/eff.length;eff.forEach(n=>{out[n]=share})}
+    return out;
+  };
   if(!items.length){
     box.innerHTML='<div class="empty">還沒有安排行程，新增第一筆吧！</div>';
   }else{
@@ -1007,13 +1107,24 @@ async function renderItinerary(){
       byDate[d].forEach(it=>{
         const timeStr=it.start_time?(it.start_time+(it.end_time?'–'+it.end_time:'')):'時間未定';
         const isPaid=Number(it.cost)>0;
-        const eff=isPaid?effOf(it):[];
-        const per=isPaid&&eff.length?Math.ceil(Number(it.cost)/eff.length):0;
+        const isFoodItem=it.type==='food'&&it.food_shares&&Object.keys(it.food_shares).length;
+        let costLine='',whoLine='';
+        if(isFoodItem){
+          const pp=perPersonCost(it);
+          const svc=(it.service_pct!==undefined&&it.service_pct!==null)?it.service_pct:0;
+          costLine=`<div class="cost">$${Number(it.cost).toLocaleString()}（含服務費 ${svc}%）</div>`;
+          whoLine=`<div class="who">${Object.keys(pp).map(n=>`${esc(n)} $${Math.round(pp[n]).toLocaleString()}`).join('、')}</div>`;
+        }else{
+          const eff=isPaid?effOf(it):[];
+          const per=isPaid&&eff.length?Math.ceil(Number(it.cost)/eff.length):0;
+          costLine=it.cost?`<div class="cost">$${Number(it.cost).toLocaleString()}${isPaid&&eff.length?`｜${eff.length} 人分攤，每人 $${per.toLocaleString()}`:''}</div>`:'';
+          whoLine=isPaid&&eff.length?`<div class="who">分攤：${eff.map(esc).join('、')}</div>`:'';
+        }
         html+=`<div class="itin-item ${it.type}">
           <div class="time">${timeStr}<span class="tag">${ITIN_LABEL[it.type]||''}</span></div>
           <div class="ttl">${esc(it.title)}</div>
-          ${it.cost?`<div class="cost">$${Number(it.cost).toLocaleString()}${isPaid&&eff.length?`｜${eff.length} 人分攤，每人 $${per.toLocaleString()}`:''}</div>`:''}
-          ${isPaid&&eff.length?`<div class="who">分攤：${eff.map(esc).join('、')}</div>`:''}
+          ${costLine}
+          ${whoLine}
           ${it.payer?`<div class="who">💳 ${esc(it.payer)} 先墊付</div>`:''}
           ${it.note?`<div class="nt">${esc(it.note)}</div>`:''}
           <button class="edit" data-id="${it.id}">✏️ 編輯</button><button class="del" data-id="${it.id}">刪除</button>
@@ -1035,10 +1146,8 @@ async function renderItinerary(){
   });
   const personTotals={};
   items.filter(i=>Number(i.cost)>0).forEach(i=>{
-    const eff=effOf(i);
-    if(!eff.length)return;
-    const share=Number(i.cost)/eff.length;
-    eff.forEach(n=>{personTotals[n]=(personTotals[n]||0)+share});
+    const pp=perPersonCost(i);
+    Object.entries(pp).forEach(([n,amt])=>{personTotals[n]=(personTotals[n]||0)+amt});
   });
   const personRows=Object.entries(personTotals).sort((a,b)=>b[1]-a[1]);
   const grand=Object.values(catTotals).reduce((s,v)=>s+v,0);
@@ -1061,10 +1170,10 @@ async function renderItinerary(){
     const bal={};   // 正數＝應收回，負數＝應付出
     paidItems.forEach(i=>{
       const c=Number(i.cost);
-      const eff=effOf(i);
-      if(!eff.length)return;
+      const pp=perPersonCost(i);
+      if(!Object.keys(pp).length)return;
       bal[i.payer]=(bal[i.payer]||0)+c;
-      eff.forEach(n=>{bal[n]=(bal[n]||0)-c/eff.length});
+      Object.entries(pp).forEach(([n,amt])=>{bal[n]=(bal[n]||0)-amt});
     });
     html+='<p class="note" style="margin:14px 0 4px">💳 墊付結算（只計入有選「誰先墊付」的項目）</p>';
     Object.entries(bal).sort((a,b)=>b[1]-a[1]).forEach(([n,v])=>{
