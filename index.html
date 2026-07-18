@@ -63,8 +63,21 @@
   create policy "public_all" on qiao_proposals for all using (true) with check (true);
   create policy "public_all" on qiao_itinerary for all using (true) with check (true);
 
-  ※ 如果你的專案已經有前三張表，只要另外執行 qiao_itinerary
-     那段 create table / RLS / policy 就好，不會影響既有資料。
+  -- 「還款紀錄」表（記錄實際還款，結算會自動沖銷）：
+  create table if not exists qiao_settlements (
+    id text primary key,
+    event_id text not null,
+    from_name text not null,
+    to_name text not null,
+    amount numeric not null,
+    note text default '',
+    created_at timestamptz default now()
+  );
+  alter table qiao_settlements enable row level security;
+  create policy "public_all" on qiao_settlements for all using (true) with check (true);
+
+  ※ 如果你的專案已經有前四張表，只要另外執行 qiao_itinerary
+     和 qiao_settlements 那兩段 create table / RLS / policy 就好，不影響既有資料。
 
   2. 把下面 <script> 裡的 SUPABASE_URL 和 SUPABASE_KEY
      換成你專案的 Project URL 和 anon public key
@@ -300,6 +313,13 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .food-row input{flex:none;width:110px;padding:8px 10px}
 .food-sum{font-size:.8rem;color:#8a5a30;line-height:1.9;margin-top:6px;padding-top:8px;border-top:1px dashed #e0c3a8}
 .food-sum b{color:#b3541e}
+.settle-form{background:var(--green-soft);border-radius:12px;padding:12px;margin-top:12px}
+.settle-row{display:flex;align-items:center;gap:7px}
+.settle-row select{flex:1;padding:8px 6px;min-width:0}
+.settle-row .arw{color:var(--green);font-weight:800;flex:none}
+.settle-row input{flex:none;width:88px;padding:8px 10px}
+.mini-rec{background:var(--green);color:#fff;font-size:.72rem;padding:4px 10px;border-radius:999px;margin-left:8px}
+.mini-del{background:none;color:var(--stamp);font-size:.72rem;text-decoration:underline;padding:4px 2px;margin-left:8px}
 .split-row:last-child{border-bottom:none}
 .split-row b{color:var(--green)}
 /* ---- 其他 ---- */
@@ -559,6 +579,7 @@ async function dbDeleteEvent(id){
   await sb.from('qiao_responses').delete().eq('event_id',id);
   await sb.from('qiao_proposals').delete().eq('event_id',id);
   await sb.from('qiao_itinerary').delete().eq('event_id',id);
+  await sb.from('qiao_settlements').delete().eq('event_id',id);
   const{error}=await sb.from('qiao_events').delete().eq('id',id);if(error)throw error;
 }
 async function dbItinerary(eid){
@@ -573,6 +594,16 @@ async function dbUpdateItinerary(id,fields){
 }
 async function dbDeleteItinerary(id){
   const{error}=await sb.from('qiao_itinerary').delete().eq('id',id);if(error)throw error;
+}
+async function dbSettlements(eid){
+  const{data,error}=await sb.from('qiao_settlements').select('*').eq('event_id',eid).order('created_at');
+  if(error)throw error;return data||[];
+}
+async function dbAddSettlement(row){
+  const{error}=await sb.from('qiao_settlements').insert(row);if(error)throw error;
+}
+async function dbDeleteSettlement(id){
+  const{error}=await sb.from('qiao_settlements').delete().eq('id',id);if(error)throw error;
 }
 async function dbResponses(eid){
   const{data,error}=await sb.from('qiao_responses').select('*').eq('event_id',eid);
@@ -1063,9 +1094,9 @@ async function renderItinerary(){
   const splitBox=document.getElementById('itinSplit');
   box.innerHTML='<div class="spin"></div>';
   splitBox.innerHTML='<div class="spin"></div>';
-  let items=[],resp=[];
+  let items=[],resp=[],settles=[];
   try{
-    [items,resp]=await Promise.all([dbItinerary(curEvent.id),dbResponses(curEvent.id)]);
+    [items,resp,settles]=await Promise.all([dbItinerary(curEvent.id),dbResponses(curEvent.id),dbSettlements(curEvent.id)]);
   }catch(e){
     const msg=esc(e&&e.message?e.message:'未知錯誤');
     box.innerHTML=`<div class="empty">讀取失敗：${msg}</div>`;
@@ -1164,7 +1195,7 @@ async function renderItinerary(){
   }else{
     html+='<div class="empty">目前沒有已填金額的項目</div>';
   }
-  // ---- 墊付結算：誰給誰 ----
+  // ---- 墊付結算：誰給誰（含還款沖銷）----
   const paidItems=items.filter(i=>Number(i.cost)>0&&i.payer);
   if(paidItems.length){
     const bal={};   // 正數＝應收回，負數＝應付出
@@ -1175,32 +1206,94 @@ async function renderItinerary(){
       bal[i.payer]=(bal[i.payer]||0)+c;
       Object.entries(pp).forEach(([n,amt])=>{bal[n]=(bal[n]||0)-amt});
     });
-    html+='<p class="note" style="margin:14px 0 4px">💳 墊付結算（只計入有選「誰先墊付」的項目）</p>';
+    // 套用已登記的還款：付款人債務減少(+)、收款人應收減少(-)
+    (settles||[]).forEach(s=>{
+      const amt=Number(s.amount)||0;
+      bal[s.from_name]=(bal[s.from_name]||0)+amt;
+      bal[s.to_name]=(bal[s.to_name]||0)-amt;
+    });
+    html+='<p class="note" style="margin:14px 0 4px">💳 墊付結算（已扣掉下方還款紀錄後的淨額）</p>';
     Object.entries(bal).sort((a,b)=>b[1]-a[1]).forEach(([n,v])=>{
       const r=Math.round(v);
       if(!r)return;
-      html+=`<div class="split-row"><span>${esc(n)}</span><b style="color:${r>0?'var(--green)':'var(--stamp)'}">${r>0?'應收回':'應付出'} $${Math.abs(r).toLocaleString()}</b></div>`;
+      html+=`<div class="split-row"><span>${esc(n)}</span><b style="color:${r>0?'var(--green)':'var(--stamp)'}">${r>0?'應收回':'還要付出'} $${Math.abs(r).toLocaleString()}</b></div>`;
     });
-    // 用最少轉帳次數把帳結平
+    // 用最少轉帳次數把剩餘的帳結平
     const creditors=Object.entries(bal).filter(([,v])=>v>0.5).map(([n,v])=>({n,v})).sort((a,b)=>b.v-a.v);
     const debtors=Object.entries(bal).filter(([,v])=>v<-0.5).map(([n,v])=>({n,v:-v})).sort((a,b)=>b.v-a.v);
     const transfers=[];
     let ci=0,di=0;
     while(ci<creditors.length&&di<debtors.length){
       const pay=Math.min(creditors[ci].v,debtors[di].v);
-      transfers.push([debtors[di].n,creditors[ci].n,pay]);
+      transfers.push([debtors[di].n,creditors[ci].n,Math.round(pay)]);
       creditors[ci].v-=pay;debtors[di].v-=pay;
       if(creditors[ci].v<0.5)ci++;
       if(debtors[di].v<0.5)di++;
     }
     if(transfers.length){
-      html+='<p class="note" style="margin:10px 0 4px">建議轉帳（最少次數結清）</p>';
+      html+='<p class="note" style="margin:10px 0 4px">還沒結清的部分（最少次數轉帳）：點「記錄還款」把實際還的金額登記進去</p>';
       transfers.forEach(([from,to,amt])=>{
-        html+=`<div class="split-row"><span>${esc(from)} ➔ ${esc(to)}</span><b>$${Math.round(amt).toLocaleString()}</b></div>`;
+        html+=`<div class="split-row"><span>${esc(from)} ➔ ${esc(to)}</span>
+          <span><b>$${amt.toLocaleString()}</b>
+          <button class="mini-rec" data-from="${esc(from)}" data-to="${esc(to)}" data-amt="${amt}">記錄還款</button></span></div>`;
       });
+    }else{
+      html+='<div class="split-row" style="color:var(--green);font-weight:700">✅ 全部結清了！</div>';
     }
   }
+  // ---- 手動新增還款 ----
+  const opts='<option value="">選人</option>'+allNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  html+=`<div class="settle-form">
+    <p class="note" style="margin:14px 0 6px">✍️ 記錄一筆還款（支援部分還款）</p>
+    <div class="settle-row">
+      <select id="setFrom">${opts}</select>
+      <span class="arw">➔</span>
+      <select id="setTo">${opts}</select>
+      <input type="text" inputmode="decimal" id="setAmt" placeholder="金額">
+    </div>
+    <button class="btn-ghost" id="setAddBtn" style="margin-top:8px">加入還款紀錄</button>
+  </div>`;
+  // ---- 已登記的還款紀錄 ----
+  if(settles&&settles.length){
+    html+='<p class="note" style="margin:14px 0 4px">已登記的還款</p>';
+    settles.slice().reverse().forEach(s=>{
+      html+=`<div class="split-row"><span>${esc(s.from_name)} ➔ ${esc(s.to_name)}${s.note?'（'+esc(s.note)+'）':''}</span>
+        <span><b>$${Number(s.amount).toLocaleString()}</b>
+        <button class="mini-del" data-id="${s.id}">刪除</button></span></div>`;
+    });
+  }
   splitBox.innerHTML=html;
+  // 綁定：快速記錄還款（帶入建議金額）
+  splitBox.querySelectorAll('.mini-rec').forEach(b=>b.addEventListener('click',()=>{
+    document.getElementById('setFrom').value=b.dataset.from;
+    document.getElementById('setTo').value=b.dataset.to;
+    document.getElementById('setAmt').value=b.dataset.amt;
+    document.getElementById('setAmt').scrollIntoView({behavior:'smooth',block:'center'});
+    document.getElementById('setAmt').focus();
+  }));
+  // 綁定：加入還款
+  const addBtn=document.getElementById('setAddBtn');
+  if(addBtn)addBtn.addEventListener('click',addSettlement);
+  // 綁定：刪除還款
+  splitBox.querySelectorAll('.mini-del').forEach(b=>b.addEventListener('click',async()=>{
+    if(!confirm('刪除這筆還款紀錄？'))return;
+    try{await dbDeleteSettlement(b.dataset.id)}catch(e){toast('刪除失敗，請再試一次');return}
+    toast('已刪除還款紀錄');renderItinerary();
+  }));
+}
+async function addSettlement(){
+  if(needCfg())return;
+  const from=document.getElementById('setFrom').value;
+  const to=document.getElementById('setTo').value;
+  const amtRaw=document.getElementById('setAmt').value.trim();
+  if(!from||!to){toast('請選還款人和收款人');return}
+  if(from===to){toast('付款人和收款人不能同一人');return}
+  if(!amtRaw||isNaN(amtRaw)||Number(amtRaw)<=0){toast('請輸入正確金額');return}
+  try{
+    await dbAddSettlement({id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+      event_id:curEvent.id,from_name:from,to_name:to,amount:Number(amtRaw),note:''});
+    toast('已記錄還款');renderItinerary();
+  }catch(e){toast('記錄失敗：'+(e.message||'請再試一次'))}
 }
 
 /* ---- 初始化 ---- */
