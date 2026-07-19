@@ -62,6 +62,8 @@
   -- 加入「餐飲逐人分帳＋服務費」需要的欄位（既有表執行這兩行）：
   -- alter table qiao_itinerary add column if not exists food_shares jsonb;
   -- alter table qiao_itinerary add column if not exists service_pct numeric default 0;
+  -- 加入「每人吃喝了什麼」備註欄位（既有表執行這行即可）：
+  -- alter table qiao_itinerary add column if not exists food_items jsonb;
   alter table qiao_events enable row level security;
   alter table qiao_responses enable row level security;
   alter table qiao_proposals enable row level security;
@@ -316,9 +318,11 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 }
 .split-row{display:flex;justify-content:space-between;font-size:.9rem;padding:7px 0;border-bottom:1px dashed var(--line)}
 .food-box{background:#fbeadd55;border:1.5px solid #f0d3bd;border-radius:12px;padding:12px;margin:4px 0 2px}
-.food-row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
-.food-row .nm{flex:1;font-size:.92rem;font-weight:600}
-.food-row input{flex:none;width:110px;padding:8px 10px}
+.food-row{margin-bottom:9px}
+.food-row-top{display:flex;align-items:center;gap:8px}
+.food-row-top .nm{flex:1;font-size:.92rem;font-weight:600}
+.food-row-top input{flex:none;width:110px;padding:8px 10px}
+.food-row .item-input{width:100%;padding:7px 10px;font-size:.85rem;margin-top:5px}
 .food-sum{font-size:.8rem;color:#8a5a30;line-height:1.9;margin-top:6px;padding-top:8px;border-top:1px dashed #e0c3a8}
 .food-sum b{color:#b3541e}
 .settle-form{background:var(--green-soft);border-radius:12px;padding:12px;margin-top:12px}
@@ -328,6 +332,30 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .settle-row input{flex:none;width:88px;padding:8px 10px}
 .mini-rec{background:var(--green);color:#fff;font-size:.72rem;padding:4px 10px;border-radius:999px;margin-left:8px}
 .mini-del{background:none;color:var(--stamp);font-size:.72rem;text-decoration:underline;padding:4px 2px;margin-left:8px}
+.calc-detail{margin-top:14px;border:1.5px solid var(--line);border-radius:12px;overflow:hidden}
+.calc-detail summary{background:var(--green-soft);color:var(--green);font-weight:700;font-size:.9rem;padding:11px 14px;cursor:pointer;list-style:none}
+.calc-detail summary::-webkit-details-marker{display:none}
+.calc-detail summary::before{content:'▸ ';font-size:.8rem}
+.calc-detail[open] summary::before{content:'▾ '}
+.calc-detail>*:not(summary){margin-left:14px;margin-right:14px}
+.calc-intro{font-size:.82rem;color:var(--ink-soft);line-height:1.7;margin:12px 0}
+.calc-person{background:#fafbfa;border:1px solid var(--line);border-radius:10px;padding:11px 13px;margin-bottom:12px}
+.cp-name{font-weight:800;font-size:1rem;margin-bottom:7px;color:var(--ink)}
+.cl{display:flex;align-items:baseline;gap:8px;font-size:.88rem;padding:3px 0;line-height:1.5}
+.cl .op{flex:none;width:1.2em;font-weight:800;text-align:center}
+.cl .op.plus{color:var(--green)}
+.cl .op.minus{color:var(--stamp)}
+.cl .ct{flex:1;color:var(--ink-soft)}
+.cl .cv{flex:none;font-variant-numeric:tabular-nums;font-weight:600}
+.cl.total{border-top:1.5px solid var(--line);margin-top:5px;padding-top:7px;font-weight:800}
+.cl.total .ct{color:var(--ink)}
+.cp-concl{margin-top:7px;font-size:.85rem;background:#fff;border-radius:8px;padding:7px 10px;line-height:1.6}
+.calc-final{background:var(--ticket);border:1.5px solid var(--ticket-line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
+.cf-title{font-weight:800;margin-bottom:8px;color:#6d5f3f}
+.cf-line{font-size:.85rem;color:#6d5f3f;line-height:1.7}
+.cf-transfer{font-size:.95rem;font-weight:700;color:var(--green);padding:4px 0;border-bottom:1px dashed var(--ticket-line)}
+.cf-transfer:last-child{border-bottom:none}
+.calc-note{font-size:.72rem;color:var(--ink-soft);margin:6px 0 12px}
 .split-row:last-child{border-bottom:none}
 .split-row b{color:var(--green)}
 /* ---- 其他 ---- */
@@ -555,6 +583,7 @@ let itinParticipantSel=new Set();
 let editingItinId=null;
 let lastItinNames=[];
 let foodSharesState={};
+let foodItemState={};
 
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),2400)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -977,6 +1006,7 @@ function resetItinForm(){
   document.getElementById('itinService').value='10';
   itinParticipantSel=new Set();
   foodSharesState={};
+  foodItemState={};
   buildParticipantChips(lastItinNames);
   onItinTypeChange();
   document.getElementById('itinSubmitBtn').textContent='新增這筆';
@@ -996,8 +1026,9 @@ function startEditItin(it){
   itinParticipantSel=new Set(Array.isArray(it.participants)?it.participants:[]);
   buildParticipantChips(lastItinNames);
   document.getElementById('itinPayer').value=it.payer||'';
-  // 餐飲：還原逐人金額與服務費
+  // 餐飲：還原逐人金額、內容與服務費
   foodSharesState=(it.food_shares&&typeof it.food_shares==='object')?{...it.food_shares}:{};
+  foodItemState=(it.food_items&&typeof it.food_items==='object')?{...it.food_items}:{};
   document.getElementById('itinService').value=(it.service_pct!==undefined&&it.service_pct!==null)?it.service_pct:'10';
   onItinTypeChange();
   document.getElementById('itinSubmitBtn').textContent='更新這筆';
@@ -1023,7 +1054,9 @@ function buildFoodRows(names){
   names.forEach(n=>{
     const row=document.createElement('div');row.className='food-row';
     const val=(foodSharesState[n]!==undefined&&foodSharesState[n]!==null)?foodSharesState[n]:'';
-    row.innerHTML=`<span class="nm">${esc(n)}</span>`;
+    const itemVal=foodItemState[n]||'';
+    const top=document.createElement('div');top.className='food-row-top';
+    top.innerHTML=`<span class="nm">${esc(n)}</span>`;
     const inp=document.createElement('input');
     inp.type='text';inp.inputMode='decimal';inp.placeholder='0';inp.value=val;inp.dataset.n=n;
     inp.addEventListener('input',()=>{
@@ -1032,7 +1065,16 @@ function buildFoodRows(names){
       else foodSharesState[n]=Number(v);
       computeFood();
     });
-    row.appendChild(inp);box.appendChild(row);
+    top.appendChild(inp);row.appendChild(top);
+    const itemInp=document.createElement('input');
+    itemInp.type='text';itemInp.className='item-input';itemInp.placeholder='吃喝了什麼（可留空）';itemInp.value=itemVal;itemInp.dataset.n=n;
+    itemInp.addEventListener('input',()=>{
+      const v=itemInp.value.trim();
+      if(v==='')delete foodItemState[n];
+      else foodItemState[n]=v;
+    });
+    row.appendChild(itemInp);
+    box.appendChild(row);
   });
   computeFood();
 }
@@ -1063,7 +1105,7 @@ async function submitItinItem(){
   if(!title){toast('請填內容／地點名稱');return}
   let cost=costRaw?Number(costRaw):0;
   if(costRaw&&(isNaN(cost)||cost<0)){toast('金額請輸入正確的數字');return}
-  let food_shares=null,service_pct=0,participants=[...itinParticipantSel];
+  let food_shares=null,food_items=null,service_pct=0,participants=[...itinParticipantSel];
   if(type==='food'){
     const eaters=Object.keys(foodSharesState).filter(n=>Number(foodSharesState[n])>0);
     if(!eaters.length){toast('請至少填一位的餐點金額');return}
@@ -1073,10 +1115,13 @@ async function submitItinItem(){
     const subtotal=eaters.reduce((s,n)=>s+food_shares[n],0);
     cost=subtotal+Math.round(subtotal*service_pct/100);
     participants=eaters; // 餐飲分攤對象就是有點餐的人
+    const itemEntries=Object.entries(foodItemState).filter(([,v])=>v&&v.trim());
+    if(itemEntries.length)food_items=Object.fromEntries(itemEntries);
   }
   const fields={date,start_time:start||null,end_time:end||null,
     type,title,cost,note,participants,
     payer:document.getElementById('itinPayer').value||'',
+    food_items,
     food_shares,service_pct};
   try{
     if(editingItinId){
@@ -1147,12 +1192,15 @@ async function renderItinerary(){
         const timeStr=it.start_time?(it.start_time+(it.end_time?'–'+it.end_time:'')):'時間未定';
         const isPaid=Number(it.cost)>0;
         const isFoodItem=it.type==='food'&&it.food_shares&&Object.keys(it.food_shares).length;
-        let costLine='',whoLine='';
+        let costLine='',whoLine='',itemLine='';
         if(isFoodItem){
           const pp=perPersonCost(it);
           const svc=(it.service_pct!==undefined&&it.service_pct!==null)?it.service_pct:0;
           costLine=`<div class="cost">$${Number(it.cost).toLocaleString()}（含服務費 ${svc}%）</div>`;
           whoLine=`<div class="who">${Object.keys(pp).map(n=>`${esc(n)} $${Math.round(pp[n]).toLocaleString()}`).join('、')}</div>`;
+          if(it.food_items&&typeof it.food_items==='object'&&Object.keys(it.food_items).length){
+            itemLine=`<div class="who">🍜 ${Object.entries(it.food_items).map(([n,v])=>`${esc(n)}：${esc(v)}`).join('、')}</div>`;
+          }
         }else{
           const eff=isPaid?effOf(it):[];
           const per=isPaid&&eff.length?Math.ceil(Number(it.cost)/eff.length):0;
@@ -1164,6 +1212,7 @@ async function renderItinerary(){
           <div class="ttl">${esc(it.title)}</div>
           ${costLine}
           ${whoLine}
+          ${itemLine}
           ${it.payer?`<div class="who">💳 ${esc(it.payer)} 先墊付</div>`:''}
           ${it.note?`<div class="nt">${esc(it.note)}</div>`:''}
           <button class="edit" data-id="${it.id}">✏️ 編輯</button><button class="del" data-id="${it.id}">刪除</button>
@@ -1207,18 +1256,27 @@ async function renderItinerary(){
   const paidItems=items.filter(i=>Number(i.cost)>0&&i.payer);
   if(paidItems.length){
     const bal={};   // 正數＝應收回，負數＝應付出
+    const bd={};    // 每人加減法明細
+    const ensure=n=>{if(!bd[n])bd[n]={paid:[],owe:[],repaid:[],received:[]};return bd[n]};
     paidItems.forEach(i=>{
-      const c=Number(i.cost);
+      const c=Math.round(Number(i.cost));
       const pp=perPersonCost(i);
       if(!Object.keys(pp).length)return;
       bal[i.payer]=(bal[i.payer]||0)+c;
-      Object.entries(pp).forEach(([n,amt])=>{bal[n]=(bal[n]||0)-amt});
+      ensure(i.payer).paid.push({t:i.title,a:c});
+      Object.entries(pp).forEach(([n,amt])=>{
+        const r=Math.round(amt);
+        bal[n]=(bal[n]||0)-r;
+        ensure(n).owe.push({t:i.title,a:r});
+      });
     });
     // 套用已登記的還款：付款人債務減少(+)、收款人應收減少(-)
     (settles||[]).forEach(s=>{
-      const amt=Number(s.amount)||0;
+      const amt=Math.round(Number(s.amount)||0);
       bal[s.from_name]=(bal[s.from_name]||0)+amt;
       bal[s.to_name]=(bal[s.to_name]||0)-amt;
+      ensure(s.from_name).repaid.push({who:s.to_name,a:amt});
+      ensure(s.to_name).received.push({who:s.from_name,a:amt});
     });
     html+='<p class="note" style="margin:14px 0 4px">💳 墊付結算（已扣掉下方還款紀錄後的淨額）</p>';
     Object.entries(bal).sort((a,b)=>b[1]-a[1]).forEach(([n,v])=>{
@@ -1248,6 +1306,8 @@ async function renderItinerary(){
     }else{
       html+='<div class="split-row" style="color:var(--green);font-weight:700">✅ 全部結清了！</div>';
     }
+    // ---- 🧮 計算過程（逐人加減法）----
+    html+=buildCalcExplain(bd,bal,transfers);
   }
   // ---- 手動新增還款 ----
   const opts='<option value="">選人</option>'+allNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
@@ -1288,6 +1348,45 @@ async function renderItinerary(){
     try{await dbDeleteSettlement(b.dataset.id)}catch(e){toast('刪除失敗，請再試一次');return}
     toast('已刪除還款紀錄');renderItinerary();
   }));
+}
+function buildCalcExplain(bd,bal,transfers){
+  const money=n=>'$'+Math.abs(Math.round(n)).toLocaleString();
+  const names=Object.keys(bd).filter(n=>{
+    const b=bd[n];return b.paid.length||b.owe.length||b.repaid.length||b.received.length;
+  }).sort((a,b)=>(bal[b]||0)-(bal[a]||0));
+  if(!names.length)return '';
+  let h='<details class="calc-detail"><summary>🧮 點我看每個人的金額怎麼算出來的</summary>';
+  h+='<p class="calc-intro">每個人的錢就是：<b>先付的錢</b> 減掉 <b>自己該分攤的</b>，再算進 <b>還款</b>。算出來是正的＝別人要還你；是負的＝你還要付。</p>';
+  names.forEach(n=>{
+    const b=bd[n];
+    let run=0;
+    h+=`<div class="calc-person"><div class="cp-name">${esc(n)}</div>`;
+    b.paid.forEach(x=>{run+=x.a;h+=`<div class="cl"><span class="op plus">＋</span><span class="ct">先付了「${esc(x.t)}」</span><span class="cv">${money(x.a)}</span></div>`;});
+    b.owe.forEach(x=>{run-=x.a;h+=`<div class="cl"><span class="op minus">－</span><span class="ct">我在「${esc(x.t)}」該分攤</span><span class="cv">${money(x.a)}</span></div>`;});
+    b.repaid.forEach(x=>{run+=x.a;h+=`<div class="cl"><span class="op plus">＋</span><span class="ct">我已還給 ${esc(x.who)}</span><span class="cv">${money(x.a)}</span></div>`;});
+    b.received.forEach(x=>{run-=x.a;h+=`<div class="cl"><span class="op minus">－</span><span class="ct">${esc(x.who)} 已還我</span><span class="cv">${money(x.a)}</span></div>`;});
+    const net=Math.round(run);
+    const concl=net>0?`結果是正的 → 別人合計要還 <b>${esc(n)} ${money(net)}</b>`
+      :net<0?`結果是負的 → <b>${esc(n)} 還要付出 ${money(net)}</b>`
+      :`剛好打平，不用付也不用收`;
+    h+=`<div class="cl total"><span class="op">＝</span><span class="ct">加起來</span><span class="cv">${net<0?'－':''}${money(net)}</span></div>`;
+    h+=`<div class="cp-concl">${concl}</div></div>`;
+  });
+  if(transfers.length){
+    const cred=names.filter(n=>Math.round(bal[n])>0).map(n=>`${esc(n)} 要收 ${money(bal[n])}`);
+    const debt=names.filter(n=>Math.round(bal[n])<0).map(n=>`${esc(n)} 要付 ${money(bal[n])}`);
+    h+='<div class="calc-final"><div class="cf-title">最後怎麼湊成一次轉帳？</div>';
+    if(cred.length)h+=`<div class="cf-line">要收錢的人：${cred.join('、')}</div>`;
+    if(debt.length)h+=`<div class="cf-line">要付錢的人：${debt.join('、')}</div>`;
+    h+='<div class="cf-line" style="margin-top:6px">把要付的人和要收的人湊起來，就得到：</div>';
+    transfers.forEach(([from,to,amt])=>{
+      h+=`<div class="cf-transfer">${esc(from)} 付給 ${esc(to)} <b>$${amt.toLocaleString()}</b></div>`;
+    });
+    h+='</div>';
+  }
+  h+='<p class="calc-note">＊金額四捨五入到整數，偶爾可能有 1 元誤差，不影響大方向。</p>';
+  h+='</details>';
+  return h;
 }
 async function addSettlement(){
   if(needCfg())return;
