@@ -1276,16 +1276,19 @@ async function renderItinerary(){
         ensure(n).owe.push({t:i.title,a:r});
       });
     });
-    // 直接債務：debtMap[債務人][墊付人] = 金額（朋友直覺版：直接還給幫你墊的人）
+    // 直接債務：debtMap[債務人][墊付人] = {amt, items}（朋友直覺版：直接還給幫你墊的人）
     const debtMap={};
-    const addDebt=(from,to,amt)=>{
+    const fmtItemTag=it=>`${fmtD(it.date)}${it.start_time?' '+it.start_time:''} ${it.title}`;
+    const addDebt=(from,to,amt,item)=>{
       if(from===to||amt<=0)return;
       debtMap[from]=debtMap[from]||{};
-      debtMap[from][to]=(debtMap[from][to]||0)+amt;
+      if(!debtMap[from][to])debtMap[from][to]={amt:0,items:[]};
+      debtMap[from][to].amt+=amt;
+      if(item)debtMap[from][to].items.push(item);
     };
     paidItems.forEach(i=>{
       const pp=perPersonCost(i);
-      Object.entries(pp).forEach(([n,amt])=>{addDebt(n,i.payer,Math.round(amt))});
+      Object.entries(pp).forEach(([n,amt])=>{addDebt(n,i.payer,Math.round(amt),i)});
     });
     // 套用已登記的還款：付款人債務減少(+)、收款人應收減少(-)
     (settles||[]).forEach(s=>{
@@ -1299,8 +1302,8 @@ async function renderItinerary(){
     (settles||[]).forEach(s=>{
       let amt=Math.round(Number(s.amount)||0);
       if(debtMap[s.from_name]&&debtMap[s.from_name][s.to_name]){
-        const cut=Math.min(amt,debtMap[s.from_name][s.to_name]);
-        debtMap[s.from_name][s.to_name]-=cut;
+        const cut=Math.min(amt,debtMap[s.from_name][s.to_name].amt);
+        debtMap[s.from_name][s.to_name].amt-=cut;
       }
     });
     html+='<p class="note" style="margin:14px 0 4px">💳 墊付結算（已扣掉下方還款紀錄後的淨額）</p>';
@@ -1324,9 +1327,9 @@ async function renderItinerary(){
     // 直接債務清單（每人 → 各墊付人，扣掉還款後 > 0 的）
     const directList=[];
     Object.keys(debtMap).forEach(from=>{
-      Object.entries(debtMap[from]).forEach(([to,amt])=>{
-        const r=Math.round(amt);
-        if(r>0)directList.push([from,to,r]);
+      Object.entries(debtMap[from]).forEach(([to,d])=>{
+        const r=Math.round(d.amt);
+        if(r>0)directList.push([from,to,r,d.items]);
       });
     });
     directList.sort((a,b)=>b[2]-a[2]);
@@ -1338,10 +1341,15 @@ async function renderItinerary(){
     if(settleMode==='direct'){
       html+='<p class="note" style="margin:8px 0 4px">每個人直接把錢還給當初幫忙墊付的人（比較好懂，但轉帳次數可能較多）</p>';
       if(directList.length){
-        directList.forEach(([from,to,amt])=>{
-          html+=`<div class="split-row"><span>${esc(from)} ➔ ${esc(to)}</span>
+        directList.forEach(([from,to,amt,items])=>{
+          const tagLine=items&&items.length?`<div class="who">${items.map(fmtItemTag).map(esc).join('＋')}</div>`:'';
+          html+=`<div class="split-row" style="flex-direction:column;align-items:stretch;gap:4px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+            <span>${esc(from)} ➔ ${esc(to)}</span>
             <span><b>$${amt.toLocaleString()}</b>
-            <button class="mini-rec" data-from="${esc(from)}" data-to="${esc(to)}" data-amt="${amt}">記錄還款</button></span></div>`;
+            <button class="mini-rec" data-from="${esc(from)}" data-to="${esc(to)}" data-amt="${amt}">記錄還款</button></span>
+            </div>
+            ${tagLine}</div>`;
         });
       }else{
         html+='<div class="split-row" style="color:var(--green);font-weight:700">✅ 全部結清了！</div>';
@@ -1429,14 +1437,16 @@ function buildCalcExplain(bd,bal,transfers,debtMap,mode){
     h+=`<div class="cp-concl">${concl}</div></div>`;
   });
   if(mode==='direct'){
-    const debtorsWithDebt=names.filter(n=>debtMap[n]&&Object.values(debtMap[n]).some(v=>Math.round(v)>0));
+    const tag=it=>`${fmtD(it.date)}${it.start_time?' '+it.start_time:''} ${it.title}`;
+    const debtorsWithDebt=names.filter(n=>debtMap[n]&&Object.values(debtMap[n]).some(d=>Math.round(d.amt)>0));
     if(debtorsWithDebt.length){
       h+='<div class="calc-final"><div class="cf-title">你各要還給誰？（直接還給幫你墊的人）</div>';
       debtorsWithDebt.forEach(n=>{
-        const owes=Object.entries(debtMap[n]).filter(([,v])=>Math.round(v)>0);
+        const owes=Object.entries(debtMap[n]).filter(([,d])=>Math.round(d.amt)>0);
         h+=`<div class="cf-line" style="margin-top:6px"><b>${esc(n)}</b> 要還：</div>`;
-        owes.forEach(([to,amt])=>{
-          h+=`<div class="cf-transfer">${esc(n)} 付給 ${esc(to)} <b>$${Math.round(amt).toLocaleString()}</b><span class="cf-why">（${esc(to)} 當初幫你墊的）</span></div>`;
+        owes.forEach(([to,d])=>{
+          const itemTag=d.items&&d.items.length?d.items.map(tag).map(esc).join('＋'):(esc(to)+' 當初幫你墊的');
+          h+=`<div class="cf-transfer">${esc(n)} 付給 ${esc(to)} <b>$${Math.round(d.amt).toLocaleString()}</b><span class="cf-why">（${itemTag}）</span></div>`;
         });
       });
       h+='<div class="cf-note-in">這個算法就是「誰幫你墊，你就還誰」，最好懂；缺點是有時要轉比較多筆。想少轉幾筆就切到「最少次數轉帳」。</div>';
